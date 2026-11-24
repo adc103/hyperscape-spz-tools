@@ -4,7 +4,7 @@ const gl = canvas.getContext('webgl2',{alpha:false,antialias:false,depth:false,s
 const gpuTimer = gl?.getExtension('EXT_disjoint_timer_query_webgl2');
 const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
 const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
-let resources, model, sidecars, gpuModel, eyesHistory=[], sortData;
+let resources, model, gpuModel, eyesHistory=[], sortData;
 let drawCount=0, quality=1, lastMs=0, tick=0, activeQuery=null;
 
 function program(vertex,fragment) {
@@ -95,16 +95,6 @@ function cameraEyes(width,height) {
         near:frame.near??.1,far:frame.far??1500, peripheral:[0,0]
     }));
 }
-function chooseCluster(center) {
-    if(!sidecars||!$('mask').checked) return -1;
-    let best=-1, min=Infinity;
-    for(let i=0;i<sidecars.views.length;i++) {
-        const p=sidecars.views[i];
-        const d=(p[0]-center[0])**2+(p[1]-center[1])**2+(p[2]-center[2])**2;
-        if(d<min) {best=i;min=d;}
-    }
-    return best;
-}
 function detailParameters() {
     return {near:frame.detailNear??1, far:frame.detailFar??.60,
         start:frame.distanceNear??2, end:frame.distanceFar??6};
@@ -126,7 +116,6 @@ function checkView(eye,x,y,z) {
 function sortVisible(eyes,center,uploadToGl=true) {
     const {points,n}=model, {ids,keys}=sortData;
     const first=eyes[0], second=eyes[1] || first;
-    const cluster=chooseCluster(center), offset=cluster*n, words=sidecars?.words;
     const detail=$('lod').checked, config=detailParameters();
     const narrow=$('sort').value==='16';
     const [ex,ey,ez]=first.pos,[sx,sy,sz]=second.pos;
@@ -134,8 +123,6 @@ function sortVisible(eyes,center,uploadToGl=true) {
     const cap=frame.maxSplats??n;
     let count=0;
     for(let i=0;i<n&&count<cap;++i) {
-        const bit=offset+i;
-        if(cluster>=0 && !(words[Math.floor(bit/32)] & (1<<(bit%32)))) continue;
         const j=i*4;
         if(points[j+3]<.0625) continue;
         const px=points[j],py=points[j+1],pz=points[j+2];
@@ -163,7 +150,6 @@ function sortVisible(eyes,center,uploadToGl=true) {
         gl.bufferData(gl.ARRAY_BUFFER,visible,gl.DYNAMIC_DRAW);
     }
     drawCount=count;
-    return cluster;
 }
 
 function makeLayer(previous,width,height) {
@@ -276,7 +262,7 @@ function renderFrame() {
     const fresh=!reuse||tick%4===0||resize;
     ++tick;
     const center=eyes[0].pos.map((v,i)=>(v+eyes.at(-1).pos[i])*.5);
-    const cluster=sortVisible(eyes,center);
+    sortVisible(eyes,center);
     if(activeQuery&&gl.getQueryParameter(activeQuery,gl.QUERY_RESULT_AVAILABLE)) {
         if(!gl.getParameter(gpuTimer.GPU_DISJOINT_EXT)) {
             lastMs=gl.getQueryParameter(activeQuery,gl.QUERY_RESULT)/1e6;
@@ -306,6 +292,6 @@ function renderFrame() {
         compose(cache.full,dual?cache.low:null,eye,i*screenW,screenW,fresh?0:reuse);
     }
     if(measuring) gl.endQuery(gpuTimer.TIME_ELAPSED_EXT);
-    $('stats').textContent=`${drawCount.toLocaleString()} / ${model.n.toLocaleString()} splats · ${w} × ${h}${cluster<0?'':' · cluster '+cluster}${lastMs?' · '+lastMs.toFixed(1)+' ms GPU':''}`;
+    $('stats').textContent=`${drawCount.toLocaleString()} / ${model.n.toLocaleString()} splats · ${w} × ${h}${lastMs?' · '+lastMs.toFixed(1)+' ms GPU':''}`;
     return reuse!==0&&!fresh;
 }

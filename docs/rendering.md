@@ -1,12 +1,6 @@
 # How Hyperscape loads and renders an SPZ scan
 
-**Build:** Meta Hyperscape Capture 17.0.0.1.262, version code 1015808524, package `com.meta.HyperscapeHmdCapture`
-
-**Fixture:** One privately held room capture, used for file and render verification
-
-**Scope:** The saved-scan rendering path in this APK build, from file decoding through the Unity camera target. Local single-eye comparisons verify the effect of the ray shader. A headset frame capture is needed to verify pixel-level parity.
-
-The saved-scan viewer explicitly selects **RayQuadratic**. The custom SPZ decoder fixes the severe color distortion seen on direct import into SuperSplat. The RayQuadratic shader accounts for much of the remaining difference in the two tested views. It cleaned up the TV, cabinet, curtains, and walls at the original splat sizes. Exact headset parity still depends on reproducing the headset camera, live quality adjustments, and final frame composition.
+Meta Hyperscape Capture 17.0.0.1.262 (1015808524). The saved-scan path uses custom SPZ rotation and color encoding and the RayQuadratic kernel.
 
 ## 1. Saved-scan loading
 
@@ -17,32 +11,32 @@ The saved-scan path runs through the following managed methods in `HHC.dll`.
 3. `HyperscapeViewer` writes visibility cluster files keyed by the model name, creates a preloaded renderer, and passes the byte buffer, format, and kernel into `SplatModel`.
 4. `SplatRenderer.SetModel` leads to `ConstellusRenderer.RegisterModel`. The native loader in `libConstellusUnityPlugin.so` decodes the SPZ, prepares GPU buffers, and keeps the selected kernel for the rendering pass.
 
-The APK handles a glTF scene mesh separately through `MeshManager.LoadGltfFile`. The importer disables the mesh's renderer. The mesh builder sets up collision and navigation, with visible rendering controlled by `_showMeshForDebug` through a shader-warmup coroutine. The supplied scene dump contains the visibility files and shaders. It has no glTF mesh. The serialized production splat feature disables camera-depth testing.
+The APK handles a glTF scene mesh separately through `MeshManager.LoadGltfFile`. The importer disables the mesh's renderer. The mesh builder sets up collision and navigation, with visible rendering controlled by `_showMeshForDebug` through a shader-warmup coroutine. The serialized production splat feature disables camera-depth testing.
 
 ## 2. SPZ format and decoding
 
-The gzip-compressed file is **9,648,210 bytes**. It decompresses to **24,996,048 bytes**, exactly 16 header bytes plus 64 bytes of attribute storage per Gaussian. There are no trailing bytes for this payload. Header values are little-endian.
+The gzip stream starts with a 16-byte little-endian header.
 
-| Header offset | Field | Observed value |
-|---|---|---:|
+| Offset | Field | Value |
+|---|---|---|
 | 0 | Magic | `NGSP` |
 | 4 | Version, uint32 | 2 |
-| 8 | Gaussian count, uint32 | 390,563 |
-| 12 | Spherical-harmonic degree | 3 |
-| 13 | Position fractional bits | 12 |
+| 8 | Gaussian count, uint32 | `N` |
+| 12 | Spherical harmonic degree | `D` |
+| 13 | Position fractional bits | `F` |
 | 14 | Flags | `0x0C` |
 | 15 | Reserved | 0 |
 
-Let `N = 390563` and let offsets below start **after the 16-byte header**. The payload is stored in separate attribute blocks.
+Offsets below start after the header. Let `T = (D + 1)² − 1`.
 
-| Offset | Length | Decode for this file |
+| Offset | Length | Decode |
 |---|---:|---|
-| `0` | `9N` | Three signed little-endian 24-bit coordinates per splat. Divide by `4096`. The scan is Z-up. |
+| `0` | `9N` | Three signed little-endian 24-bit coordinates per splat. Divide by `2^F`. Coordinates are Z-up. |
 | `9N` | `N` | Alpha. Byte divided by `255`. Keep alpha exact in native-style processing. Use an opacity logit when writing 3DGS PLY. |
 | `10N` | `3N` | RGB DC coefficients. Decode each byte as `(byte / 255 − 0.5) / 0.15`. |
 | `13N` | `3N` | Three log-scale values. Decode as `byte / 16 − 10`. The native buffer-loading path exponentiates these for rendering with a model load scale of `1.0`. |
 | `16N` | `3N` | Axis-angle rotation-vector bytes, selected by flag `0x04`. Decode each component as `byte × (2π / 255) − π`. Convert the vector to a unit quaternion with a small-angle guard. Native order is XYZW. 3DGS PLY uses WXYZ. |
-| `19N` | `45N` | Higher-order SH coefficients, selected by flag `0x08`. Three contiguous Y, U, V byte planes, each containing `N × 15` values. Decode them using the equations below. |
+| `19N` | `3NT` | Higher-order SH coefficients, selected by flag `0x08`. Three contiguous Y, U, V byte planes, each containing `N × T` values. Decode them using the equations below. |
 
 For each higher-order coefficient, first normalize each input byte with `(byte − 128) / 128`. Then apply the APK's float32 color constants.
 
@@ -54,20 +48,16 @@ B = Y + 1.8556 × U
 SH_RGB = (RGB − 0.5) / 0.2820948064
 ```
 
-The previous corrected PLY used `−0.187324` and `−0.468124` for the green channel. The values above are the ones recovered from the APK. The difference is small. For an upright SuperSplat export, the PLY rotates positions, Gaussian orientations, and the SH basis together.
-
-The native load path can also repack the decoded coefficients for the GPU. In the 8-bit path, the loader stores DC as `clamp(round(38.25 × DC + 127.5), 0, 255)` and higher-order coefficients as `clamp(round(128 × SH + 128), 0, 255)`. The shader reverses those affine transforms. This is a second quantization step after the SPZ's YUV decode. The GPU also has other input-precision variants. In the local comparison, applying this higher-order quantization changed the two views by **0.20 and 0.28 out of 255** on average per RGB channel. The largest channel changes were 2 and 3, respectively.
+The 8-bit GPU path repacks DC as `clamp(round(38.25 × DC + 127.5), 0, 255)` and higher-order terms as `clamp(round(128 × SH + 128), 0, 255)`. The shader reverses both transforms.
 
 ## 3. Selection, visibility and continuous level of detail
 
 Preserve the original Gaussian order through decoding. The same original index identifies the Gaussian in the visibility bitstream and determines eligibility in the continuous level-of-detail shader.
 
-- **Visibility clusters.** The accompanying centroid JSON contains 64 camera positions and the same Gaussian count as the model. Unity writes the two sidecars as raw byte arrays in the model's cluster directory. The native cache loader validates the mask word count as `(N × clusterCount + 31) >> 5` before creating the GPU buffer. This scan has 781,126 words, or 3,124,504 bytes. The shader indexes a single packed bitstream using `bitIndex = clusterIndex × N + gaussianIndex`, then reads `word[bitIndex >> 5]` at bit `bitIndex & 31`. There is no padding between clusters. The native visibility search picks the nearest centroid and this call site passes a maximum-distance limit of `FLT_MAX`.
-- **Frustum and depth.** The shader family combines visibility clusters with clip-space tests and can compare against scene depth using a center offset. This is a separate input from the cluster mask. Which depth image is populated for this capture remains unverified.
+- **Visibility clusters.** Hyperscape can pick the nearest centroid and read a packed mask at bit `clusterIndex × N + gaussianIndex`.
+- **Frustum and depth.** The culling shader can combine masks with clip-space tests and an optional scene-depth test.
 - **Distance-based detail.** The multiview culling shader averages the left and right camera-space positions, measures the resulting distance, and normalizes it between the near and far distances. It interpolates the retained fraction between the two detail settings. A Gaussian is eligible when its original index is at most that fraction times the original count. Optional flags apply distance contraction or multiply the fraction by a peripheral-view factor. Projection has a separate opacity fade near a detail boundary. A budget-driven branch and a pass that caps the surviving count are also present.
 - **Adaptive budget.** The native creation path seeds near and far detail at `0.95` and `0.60`, with distances of `2 m` and `6 m`. The bundled renderer settings expose that distance range and a `10.5 ms` default tuning budget. The packaged SplatRenderer prefab has a custom detail configuration with `1.0` near detail, `0.60` far detail, `2–6 m`, and a `13.8 ms` budget. These are initialization and serialized values. On an enabled adaptive path, the renderer measures GPU render duration, adjusts a bounded quality multiplier against its target, and caps a single multiplier change at 10% of its current value. The headset's effective quality factors are frame-dependent.
-
-The local preview applies the nearest-cluster bit mask and preserves the input order for those lookups. It does not currently implement scene-depth culling or adaptive level of detail.
 
 ## 4. Projection and the RayQuadratic kernel
 
@@ -85,7 +75,7 @@ The native scene setup supplies a **0.1–1500 m** sort-key range. These constan
 
 The 16-bit curve gives roughly **0.7 mm** depth bins at 1 m, **1.4 mm** at 3 m, and **2.1 mm** at 6 m. Gaussians can tie within a bin, so reproducing tie order matters for exact overlapping-splat blending if that branch is active. The production initialization path selects **32-bit keys**. The `HyperscapeODProd` branch of `InitSplatRenderer` clears the width selector (`AppParams + 106`). Scene creation maps zero to 32 bits and a nonzero selector to 16 bits, then passes that width to the splatter constructor. The constructor uses four bytes for the production key. Its `is16BitSorting` getter returns true only for the two-byte case.
 
-The culling shader compacts visible indices with a workgroup-local atomic counter and reserves each group's output range with a global atomic increment. A stable sort of equal keys can therefore still inherit GPU emission order. Preserving original indices is essential for masks and detail selection. Once compaction has happened, file order alone cannot guarantee the native tie order. The local preview uses full-precision single-eye distances and a stable CPU sort. Across all scan centers within 10 m of the two local camera positions, the 32-bit reverse key produced about 380,000–381,000 distinct keys, versus roughly 6,300–6,400 for the 16-bit path. This diagnostic is before frustum or mask culling. Actual ties and any per-frame overrides in the supplied headset views have not been measured.
+The culling shader uses workgroup and global atomics to compact visible indices. Equal sort keys can retain GPU emission order.
 
 ### Per-splat evaluation
 
@@ -109,13 +99,11 @@ discard if fragmentAlpha < 1 / 255
 fragmentColor = (RGB × fragmentAlpha, fragmentAlpha)
 ```
 
-The shader implements the falloff as `D = 0.5 × d` followed by `1 − (2/9) × D`. The local comparison used this expression and the ray support quad. The earlier preview used an exponential ray falloff, which left streaks and red contamination on the TV. The RayQuadratic preview reduced those artifacts without editing the model's scale.
-
 ## 5. Temporal reprojection and compositing
 
-The serialized feature enables **back-to-front rendering**. For the RayQuadratic fragment's premultiplied color, the corresponding color recurrence is `C = RGB × alpha + Cbehind × (1 − alpha)`. The native blend helper also has a front-to-back accumulation mode with destination-alpha-dependent source weight. Both recurrences agree in exact arithmetic when they traverse the same ordered samples in opposite directions. Framebuffer precision and ties can affect small differences. The local CPU preview accumulates front-to-back and stops once remaining transmittance drops below `0.001`.
+The serialized feature enables **back-to-front rendering**. For the RayQuadratic fragment's premultiplied color, the corresponding color recurrence is `C = RGB × alpha + Cbehind × (1 − alpha)`. The native blend helper also has a front-to-back accumulation mode with destination-alpha-dependent source weight. Both recurrences agree in exact arithmetic when they traverse the same ordered samples in opposite directions.
 
-The renderer feature's serialized `_enableDepthTest` is `false` and its opacity-peeling layer count is `0`. `CopyCameraDepthToIntermediateBuffer` returns before copying when its depth-test flag is false and also requires valid source and destination textures when enabled. RayQuadratic still sorts and blends splats with their own depth keys. An application-level camera-depth override or a separate native depth route would need its own evidence before adding a scene-mesh depth prepass to the replica.
+The renderer feature's serialized `_enableDepthTest` is `false` and its opacity-peeling layer count is `0`. `CopyCameraDepthToIntermediateBuffer` returns before copying when its depth-test flag is false and also requires valid source and destination textures when enabled.
 
 The bundled renderer feature stores `FramesToReproject = 3`. The native setup passes this setting into the reprojection scheduler. The compute path first updates device buffers, then skips the full cull, indirect preparation, projection, and depth-sorting work when its unsigned frame test `(counter − 1) % (framesToReproject + 1) != 0` selects the reuse path. At the bundled value, that is a four-frame cadence when the optimization is active. Runtime conditions can affect when the counter is reset or which composition path is used.
 
@@ -129,40 +117,13 @@ The two-pass foveation compositor can draw the low-resolution and full-resolutio
 
 The projection shader has a `kOutputLinearRgb` specialization constant (ID 6, shader default 0). When set to 1, it applies `pow(RGB, 2.2)` to the evaluated color before FP16 packing and per-splat premultiplication. A separate native opaque-scene composition shader has its own conversion control and applies the same power to the sampled composite's RGB. Keep those two conversion points distinct when reproducing blend results.
 
-The opaque-scene shader samples color and depth with scaled UVs. If alpha correction is enabled and sampled alpha is positive, it divides RGB by alpha, raises alpha to the configured power, optionally replaces it above the configured threshold with `clamp(boost × alpha − offset, 0, 1)`, and multiplies RGB by the corrected alpha. The native constructor initializes alpha correction off. The shader also has alpha-threshold and unpremultiplication branches and writes the sampled depth. Which variant and controls reach this capture's output require runtime evidence.
+The opaque-scene shader samples color and depth with scaled UVs. If alpha correction is enabled and sampled alpha is positive, it divides RGB by alpha, raises alpha to the configured power, optionally replaces it above the configured threshold with `clamp(boost × alpha − offset, 0, 1)`, and multiplies RGB by the corrected alpha. The native constructor initializes alpha correction off. The shader also has alpha-threshold and unpremultiplication branches and writes the sampled depth.
 
 The Unity render graph requests `R8G8B8A8_UNorm` for the color intermediate and explicitly sets the descriptor's `sRGB` flag to false. `BlitToTarget` binds the camera color target and can bind depth alongside it. It uses Unity's texture blitter, with an alternate overload for a supplied material. The intermediate format describes storage at that stage. The final camera target, headset compositor, and screenshot capture determine later color transfer.
 
-The local preview is a single-eye rendering. It does not run the two-resolution compositor or reuse previous frames. Temporal and stereo parity will require a headset frame sequence or the corresponding runtime render state.
+## 6. APK locations
 
-## 6. Verification and remaining differences
-
-| Item | Evidence or status |
-|---|---|
-| Corrected 3DGS PLY | Read-back checked at 390,563 splats. Corrected axis-angle and YUV SH decoding, original model scale. |
-| RayQuadratic selection | Verified directly in the managed saved-scan call and both enum/name tables. |
-| Main remaining static improvement | Same-camera local tests in the entryway and living room reproduced the improvement after porting the RayQuadratic falloff and support geometry. |
-| Mip opacity and support math | Numerical checks on 20,556 sampled splat centers and scales verified unity opacity compensation at zero bias and factors in `[0,1]` with positive bias. A separate sweep of 10,000 valid support cases verified that the un-faded quad edge meets the fragment threshold of `1/255` on each support axis. |
-| GPU coefficient rounding | Formula verified in the native conversion and projection shader. Small RGB differences in both test views. |
-| Per-frame detail and scene depth | Code and bundled values identified. Exact active flags, depth inputs, and adaptive values during the screenshots remain unknown. |
-| Stereo and temporal output | Eye matrices, shared focal vector, scheduler, and foveated compositor traced. Exact headset matrices, render dimensions, live foveation, and frame history were unavailable for the screenshots. |
-| Color and output | Shader conversion points, intermediate storage, and camera-target blit traced. Effective specialization values, material override, and headset display or capture transfer were unavailable. |
-| Larger-splat SuperSplat export | A separate visual approximation that multiplies all model scales by `1.18`. The exact replication baseline is the original-scale model. |
-
-
-### Implementation order for a replica
-
-1. Decode the original SPZ and retain original indices and scale. Validate the header and attribute lengths before decoding.
-2. Build the per-eye camera transforms and derive the shared focal vector from the left projection and the intermediate dimensions. Select a visibility cluster by the camera position and apply its bit mask. Reproduce the active frustum and detail settings before compacting survivors.
-3. Apply Mip-Splatting, compute viewing-direction color, and generate the shared stereo sort key. Use the production 32-bit key path and carry Gaussian IDs through sorting.
-4. Build the RayQuadratic support quad for each surviving splat and each eye. Apply the vertex opacity thresholds, then evaluate and blend fragments in depth order.
-5. Reproduce temporal reuse and final composition once the stationary stereo path can be compared against the headset. Compare still views with camera pose, projection, render size, and quality parameters held fixed. Compare motion with the same frame sequence and reprojection cadence.
-
-The static reference covers the saved-scan pipeline through the app's camera-target blit. A matched headset baseline would need the per-eye matrices, intermediate sizes, active detail and shader controls, and compositor branch and history for each frame. Use a stationary matched frame to isolate residual geometry or color differences, and a matched frame sequence to isolate temporal artifacts.
-
-### Evidence anchors
-
-Addresses below are virtual addresses in this APK build. Shader names identify files beneath `Constellus/spv` in the provided app-directory dump.
+Addresses below are virtual addresses in this APK build. Shader paths are relative to `Constellus/spv`.
 
 | Evidence | Location |
 |---|---|

@@ -32,12 +32,10 @@ select{max-width:100%}.row{display:flex;gap:7px;flex-wrap:wrap}.small{font-size:
 </section>
 <button id="open" class="primary">Open SPZ</button><input id="file" type="file" accept=".spz" hidden>
 <p id="status" role="status">Files stay on this device.</p>
-<section><h2>Scene data</h2><button id="side">Add companion files</button><input id="sideFile" type="file" multiple accept=".zip,.json,.bin" hidden><p id="sideStatus">Visibility ZIP or centroid JSON and mask BIN.</p></section>
-<section><h2>Camera</h2><div class="row"><button id="reset">Reset</button><button id="entry" hidden>Capture viewpoint</button></div>
+<section><h2>Camera</h2><div class="row"><button id="reset">Reset</button></div>
 <label><input id="stereo" type="checkbox"> Side-by-side stereo</label>
 <p>Drag to look. Use W A S D to move, Q and E for height, or scroll forward and back.</p></section>
 <details><summary>Rendering settings</summary>
-<label><input id="mask" type="checkbox" checked> Visibility masks</label>
 <label><input id="mip" type="checkbox" checked> Mip-Splatting</label>
 <label><input id="sh" type="checkbox"> Foveated spherical harmonics</label>
 <label><input id="quant" type="checkbox"> 8-bit SH quantization</label>

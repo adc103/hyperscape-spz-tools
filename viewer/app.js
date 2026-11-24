@@ -1,5 +1,5 @@
 const radians=v=>v*Math.PI/180;
-let pose, initial, filename, renderQueued=false, generation=0, companionGeneration=0;
+let pose, initial, filename, renderQueued=false, generation=0;
 let dragging=null;
 const held=new Set();
 function status(message,error=false) {
@@ -25,7 +25,7 @@ function requestRender() {
         } catch(error) {status(error.message,true);}
     });
 }
-async function openScan(file, companions=[]) {
+async function openScan(file) {
     if(!file) return;
     const current=++generation;
     status('Decoding '+file.name+'…');
@@ -37,48 +37,20 @@ async function openScan(file, companions=[]) {
         upload(scan);
         model=scan;
         filename=file.name;
-        sidecars=null;
         quality=1;
         lastMs=0;
         initial=[scan.pivot,135,-4,85];
-        $('entry').hidden=true;
-        $('sideStatus').textContent='Visibility ZIP or centroid JSON and mask BIN.';
         status(file.name);
         $('empty').hidden=true;
         $('stats').hidden=false;
         setPose(...initial);
-        if(companions.length) await openSidecars(companions);
     } catch(error) {
         if(current===generation) status(error.message,true);
     }
 }
-async function openSidecars(files) {
-    if(!files.length) return;
-    if(!model) {status('Open the SPZ before adding companion files.',true);return;}
-    const active=model, latest=++companionGeneration;
-    try {
-        const decoded=await decodeSidecars(files,active,filename.replace(/\.spz$/i,''));
-        if(model!==active||latest!==companionGeneration) return;
-        sidecars=decoded;
-        $('entry').hidden=false;
-        const near=decoded.views.reduce((best,v)=>distanceFromPivot(v)<distanceFromPivot(best)?v:best,decoded.views[0]);
-        initial=[near,135,-4,85];
-        setPose(...initial);
-        $('sideStatus').textContent=decoded.views.length+' visibility clusters loaded';
-        status(filename);
-        tick=0;
-        requestRender();
-    } catch(error) {
-        if(model===active&&latest===companionGeneration) status(error.message,true);
-    }
-}
 $('open').onclick=()=>$('file').click();
-$('side').onclick=()=>$('sideFile').click();
 $('file').onchange=event=>{openScan(event.target.files[0]);event.target.value='';};
-$('sideFile').onchange=event=>{openSidecars([...event.target.files]);event.target.value='';};
 $('reset').onclick=()=>{if(model) setPose(...initial);};
-function distanceFromPivot(v) {return v.reduce((sum,x,i)=>sum+(x-model.pivot[i])**2,0);}
-$('entry').onclick=()=>{if(sidecars) setPose(...initial);};
 for(const control of document.querySelectorAll('input[type=checkbox],select')){
     control.addEventListener('change',()=>{
         tick=0;
@@ -93,8 +65,8 @@ viewport.addEventListener('drop',event=>{
     event.preventDefault();
     const files=[...event.dataTransfer.files];
     const spz=files.find(file=>/\.spz$/i.test(file.name));
-    if(spz) openScan(spz,files.filter(f=>f!==spz));
-    else openSidecars(files);
+    if(spz) openScan(spz);
+    else status('Choose a Hyperscape SPZ file.',true);
 });
 canvas.addEventListener('pointerdown',e=>{
     if(!model || frame.eyes || e.button!==0 || dragging) return;
