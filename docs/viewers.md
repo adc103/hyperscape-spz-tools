@@ -13,3 +13,16 @@ The Quest viewer prefers WebGPU when the browser exposes the WebXR binding. Othe
 Physical-headset testing is pending.
 
 [Meta Browser specifications](https://developers.meta.com/vr/documentation/web/browser-specs/) · [WebXR WebGPU binding draft](https://github.com/immersive-web/webxr-webgpu-binding/blob/main/index.bs)
+
+## Frame JSON
+
+Load a JSON object under **Advanced rendering**. Fields are optional.
+
+| Fields | Meaning |
+|---|---|
+| `eyes` | One or two calibrated views. Each has `position`, `right`, `down`, `forward`, and `tan` (positive horizontal and vertical half-FOV tangents). Optional `shift` and `fovea` are 2D normalized device coordinates. |
+| `eyes[].depth`, `depthOffset` | A depth image with `width`, `height`, and `meters` in row order from the top. Zero means unknown. `depthOffset` is in meters. |
+| `near`, `far`, `width`, `height` | Clip planes and intermediate render size per eye. |
+| `detailNear`, `detailFar`, `distanceNear`, `distanceFar`, `detailFade`, `maxSplats`, `gpuBudgetMs` | Detail fractions, their distances in meters, fade width, splat limit, and GPU time target. |
+| `foveationRadius`, `mipFadePercent`, `clipDepth`, `frontToBack` | Peripheral Mip filter, reprojection clip depth, and blend direction. |
+| `alpha` | Optional composite controls `power`, `threshold`, `boost`, `offset`, `cutoff`, and `unpremultiply`. |

@@ -1,55 +1,61 @@
 <!doctype html>
 <html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hyperscape SPZ Viewer</title>
-<style>
-:root{color-scheme:dark;font:15px/1.45 system-ui;background:#171a1a;color:#efefea;--accent:#e6c988;--line:#373a37}
-*{box-sizing:border-box}body{margin:0;display:grid;grid-template-columns:285px minmax(0,1fr);min-height:100dvh}
-aside{padding:22px;overflow:auto;max-height:100dvh;background:#202322;border-right:1px solid var(--line)}
-h1{font:600 24px/1.12 Georgia,serif;margin:0 0 20px;color:var(--accent)}
-h2{font-size:13px;margin:0 0 8px} section,details{padding:14px 0;border-bottom:1px solid var(--line)}
-button,select{font:inherit;color:inherit;background:#303431;border:1px solid #555950;border-radius:6px;padding:7px 10px}
-button:hover,select:hover{border-color:var(--accent)}button:disabled{opacity:.45}button:focus-visible,select:focus-visible,summary:focus-visible,canvas:focus-visible{outline:2px solid var(--accent)}
-.primary{background:var(--accent);color:#24221b;border-color:var(--accent);font-weight:650;width:100%}
-label{display:flex;align-items:center;gap:8px;margin:8px 0}input{accent-color:var(--accent)}
-p{margin:8px 0;color:#c2c5bc;font-size:13px}summary{cursor:pointer;font-weight:600}
-main{position:relative;min-height:65dvh;overflow:hidden;background:#121413}canvas{position:absolute;width:100%;height:100%;touch-action:none;cursor:grab;display:block}canvas:active{cursor:grabbing}
-#empty{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;padding:26px;text-align:center}
-#empty[hidden]{display:none}#empty strong{font:34px Georgia,serif;color:#eee0c2}#status{min-height:2em;overflow-wrap:anywhere}#status.error{color:#ffad9e}
-#stats{position:absolute;bottom:15px;left:15px;margin:0;background:#161716dc;padding:7px 11px;border-radius:6px;pointer-events:none}
-select{max-width:100%}.row{display:flex;gap:7px;flex-wrap:wrap}.small{font-size:12px}
-@media(max-width:680px){body{display:flex;flex-direction:column-reverse}aside{max-height:none;border-right:0}main{height:63dvh}}
-</style>
-<aside>
-<h1>Hyperscape SPZ Viewer</h1>
-<p><a href="quest.html">Quest viewer</a></p>
-<button id="open" class="primary">Open SPZ</button><input id="file" type="file" accept=".spz" hidden>
-<p id="status" role="status">Files stay on this device.</p>
-<section><h2>Camera</h2><div class="row"><button id="reset">Reset</button></div>
-<label><input id="stereo" type="checkbox"> Side-by-side stereo</label>
-<p>Drag to look. Use W A S D to move, Q and E for height, or scroll forward and back.</p></section>
-<details><summary>Rendering settings</summary>
-<label><input id="mip" type="checkbox" checked> Mip-Splatting</label>
-<label><input id="sh" type="checkbox"> Foveated spherical harmonics</label>
-<label><input id="quant" type="checkbox"> 8-bit SH quantization</label>
-<label><input id="lod" type="checkbox" checked> Distance-based detail</label>
-<label><input id="adaptive" type="checkbox"> Adaptive GPU budget</label>
-<label><input id="foveation" type="checkbox"> Two-resolution composition</label>
-<label>Reuse layer <select id="reuse"><option value="0">Off</option><option value="1">Low resolution</option><option value="2">High resolution</option></select></label>
-<label>Color conversion <select id="color"><option value="0">Off</option><option value="1">Per splat</option><option value="2">Composite</option></select></label>
-<label>Sort keys <select id="sort"><option value="32">32-bit distance</option><option value="16">16-bit distance</option></select></label>
-<button id="openFrame">Load frame settings</button> <button id="clearFrame" hidden>Clear</button><input id="frameFile" type="file" accept=".json" hidden>
-<p id="frameStatus">Optional JSON for calibrated eyes, scene depth and render controls.</p>
-<details><summary>Frame settings format</summary><p>Optional <code>eyes</code> (one or two) each have <code>position</code>, <code>forward</code>, <code>down</code>, <code>right</code> (unit vectors in the scan's coordinates), <code>tan</code> (two positive half-FOV tangents), and optional NDC <code>shift</code> and <code>fovea</code>. Each eye can include <code>depth</code> with <code>width</code>, <code>height</code> and <code>meters</code> (top-to-bottom linear camera depth, 0 for unknown).</p><p>Optional top-level controls are <code>near</code>, <code>far</code>, <code>width</code> and <code>height</code> (full-resolution intermediate per eye), <code>depthOffset</code>, <code>foveationRadius</code>, <code>mipFadePercent</code>, <code>detailNear</code>, <code>detailFar</code>, <code>distanceNear</code>, <code>distanceFar</code>, <code>detailFade</code>, <code>frontToBack</code> (boolean), <code>maxSplats</code>, <code>gpuBudgetMs</code>, <code>clipDepth</code> (0.01 or 0.99), and <code>alpha</code> with <code>power</code>, <code>threshold</code>, <code>boost</code>, <code>offset</code>, <code>cutoff</code>, and <code>unpremultiply</code>.</p></details>
-<p>The browser viewer uses its own visibility compaction, GPU timer feedback, and two-resolution layer sizes. Quest runtime settings can be supplied where exposed above.</p>
-</details>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hyperscape SPZ Viewer</title>
+    <link rel="stylesheet" href="viewer.css">
+</head>
+<body class="layout">
+<header class="file-panel">
+    <h1>Hyperscape SPZ Viewer</h1>
+    <a class="header-link" href="quest.html">Quest viewer</a>
+    <div class="actions">
+        <button id="open" class="primary">Open SPZ</button>
+        <button id="reset">Reset view</button>
+    </div>
+    <input id="file" type="file" accept=".spz" hidden>
+    <p id="status" role="status">Files stay on this device.</p>
+</header>
+<main id="viewport" aria-label="Scan view">
+    <canvas id="view" tabindex="0" aria-label="3D scene. Drag to look and use WASD to move."></canvas>
+    <div id="empty">Drop an SPZ file here.</div>
+    <p id="stats" hidden></p>
+</main>
+<aside class="settings-panel" aria-label="Viewer settings">
+    <section aria-labelledby="render-heading">
+        <h2 id="render-heading">Rendering</h2>
+        <p class="hint range-note">RayQuadratic kernel · <a href="https://github.com/adc103/hyperscape-spz-tools/blob/main/docs/rendering.md">APK reference</a></p>
+        <label class="setting"><span>Mip-Splatting<span class="hint">Reduces shimmer on fine detail.</span></span><input id="mip" type="checkbox" checked></label>
+        <label class="setting"><span>Distance-based detail<span class="hint">Draws fewer splats farther away.</span></span><input id="lod" type="checkbox" checked></label>
+        <label class="setting"><span>Foveated SH color<span class="hint">Simplifies view-dependent color at the edges.</span></span><input id="sh" type="checkbox"></label>
+        <label class="setting"><span>8-bit SH quantization<span class="hint">Uses the APK’s color coefficient quantization.</span></span><input id="quant" type="checkbox"></label>
+    </section>
+    <section aria-labelledby="camera-heading">
+        <h2 id="camera-heading">Camera</h2>
+        <label class="setting"><span>Side-by-side stereo</span><input id="stereo" type="checkbox"></label>
+        <p class="hint">Drag to look. WASD to move, Q/E for height.</p>
+    </section>
+    <details>
+        <summary>Advanced rendering</summary>
+        <label class="select-row"><span>Depth sort</span><select id="sort"><option value="32">32-bit</option><option value="16">16-bit</option></select></label>
+        <label class="select-row"><span>Convert color to linear</span><select id="color"><option value="0">Off</option><option value="1">Per splat</option><option value="2">Composite</option></select></label>
+        <label class="setting"><span>Adaptive GPU budget</span><input id="adaptive" type="checkbox"></label>
+        <label class="setting"><span>Two-resolution rendering</span><input id="foveation" type="checkbox"></label>
+        <label class="select-row"><span>Frame reuse</span><select id="reuse"><option value="0">Off</option><option value="1">Low-resolution layer</option><option value="2">High-resolution layer</option></select></label>
+        <div class="actions">
+            <button id="openFrame">Load frame JSON</button>
+            <button id="clearFrame" hidden>Clear</button>
+        </div>
+        <input id="frameFile" type="file" accept=".json" hidden>
+        <p id="frameStatus" role="status"></p>
+        <p class="hint"><a href="https://github.com/adc103/hyperscape-spz-tools/blob/main/docs/viewers.md#frame-json">Frame JSON format</a></p>
+    </details>
 </aside>
-<main id="viewport"><canvas id="view" tabindex="0" aria-label="3D scene. Drag to look and use WASD to move."></canvas><div id="empty"><div><strong>Open a room scan</strong><p>Choose or drop a Hyperscape SPZ file.</p></div></div><p id="stats" hidden></p></main>
-
 <script src="format.js"></script>
 <script src="shaders.js"></script>
 <script src="render.js"></script>
 <script src="frame.js"></script>
 <script src="app.js"></script>
+</body>
 </html>
