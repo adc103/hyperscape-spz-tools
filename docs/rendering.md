@@ -125,7 +125,7 @@ The Unity render graph requests `R8G8B8A8_UNorm` for the color intermediate and 
 
 Hyperscape builds a Unity navigation mesh from the scene geometry and injects its surface into the teleport interactable. The agent radius is 0.4 m, the height is 2 m, and the climb limit is 0.04 m. The controller pointer supplies the arc origin. The packaged gravity arc samples 30 points over one second, multiplies gravity by 2.3, and maps horizontal head-to-pointer distance and controller pitch through serialized curves. Candidate selection checks blockers between the head and the arc origin, then tests the arc segments for a surface hit. The spawn controller tracks floor height separately from eye height.
 
-The browser uses the same arc curves and blocks invalid hits. The SPZ supplies the points for an inferred single-level floor and obstacle map. Quest's floor-relative tracking supplies standing and crouching height. The browser shows a landing ring and uses its inferred map in place of the native mesh.
+The browser uses the same arc curves and blocks invalid hits. The SPZ supplies the points for an inferred single-level floor and obstacle map. Quest's floor-relative tracking supplies standing and crouching height. The browser draws the tested arc and shows a landing ring for valid hits. Its obstacle map uses the measured footprint inside each cell to keep narrow openings clear.
 
 ## 7. Code locations
 

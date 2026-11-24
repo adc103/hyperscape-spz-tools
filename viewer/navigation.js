@@ -4,6 +4,7 @@ const navCellSize=.20;
 const navMaxRadius=80;
 const navStride=1024;
 const navOffset=navStride/2;
+const obstaclePadding=.025;
 
 function navigationKey(x,y) {
     const col=Math.floor(x/navCellSize)+navOffset;
@@ -35,7 +36,7 @@ function buildNavigation(points,start) {
         const score=bins[i].size*(1-.4*Math.abs(i*binWidth-window)/window);
         if(score>size) {best=i;size=score;}
     }
-    if(size<9) return {floor:null,walkable:new Int32Array(),blocked:new Int32Array()};
+    if(size<9) return {floor:null,walkable:new Int32Array(),blocked:new Float32Array()};
     // Average each cell once so dense foreground splats cannot pull the level up.
     const samples=[...bins[best].values()].map(([sum,count])=>sum/count).sort((a,b)=>a-b);
     const floor=samples[Math.floor(samples.length/2)];
@@ -45,24 +46,34 @@ function buildNavigation(points,start) {
         const x=points[i]-ox,y=points[i+1]-oy,z=points[i+2]-floor;
         if(Math.abs(x)>navMaxRadius||Math.abs(y)>navMaxRadius||z<-.12||z>1.72) continue;
         const key=navigationKey(x,y);
-        const cell=cells.get(key)??[0,0,0,0,0,0];
+        const cell=cells.get(key)??[0,0,0,0,0,0,Infinity,Infinity,-Infinity,-Infinity];
         if(!cells.has(key)) cells.set(key,cell);
         if(z<=.105) cell[0]++;
-        else if(z>.18) cell[1+Math.min(4,Math.floor((z-.18)/.31))]++;
+        else if(z>.18) {
+            cell[1+Math.min(4,Math.floor((z-.18)/.31))]++;
+            cell[6]=Math.min(cell[6],x);
+            cell[7]=Math.min(cell[7],y);
+            cell[8]=Math.max(cell[8],x);
+            cell[9]=Math.max(cell[9],y);
+        }
     }
-    const walkable=[],blocked=[];
-    for(const [key,[ground,...body]] of cells) {
+    const walkable=[],blocked=[],obstructed=new Set();
+    for(const [key,cell] of cells) {
+        const ground=cell[0],body=cell.slice(1,6);
         const occupied=body.filter(n=>n>=5).length;
         // Upright surfaces span several bands. Dense low obstacles also block landing.
         if(occupied>=3||(body[0]>=16&&body[1]>=8)||body[0]>=40) {
             const top=body.findLastIndex(n=>n>=5);
-            blocked.push(key*8+top+1);
+            // Keep the measured footprint of a jamb instead of filling its entire cell.
+            blocked.push(key,top===4?2:.18+(top+1)*.31,
+                cell[6]-obstaclePadding,cell[7]-obstaclePadding,
+                cell[8]+obstaclePadding,cell[9]+obstaclePadding);
+            obstructed.add(key);
         }
         if(ground>=4) walkable.push(key);
     }
-    const obstructed=new Set(blocked.map(packed=>Math.floor(packed/8)));
     const filled=fillFloorHoles(walkable,obstructed);
-    return {floor,walkable:Int32Array.from(filled),blocked:Int32Array.from(blocked)};
+    return {floor,walkable:Int32Array.from(filled),blocked:Float32Array.from(blocked)};
 }
 
 function fillFloorHoles(walkable,blocked) {
@@ -81,9 +92,8 @@ function fillFloorHoles(walkable,blocked) {
 
 function readNavigation(data,start) {
     const blocked=new Map();
-    for(const packed of data.blocked) {
-        const band=(packed%8)-1;
-        blocked.set(Math.floor(packed/8),band===4?2:.18+(band+1)*.31);
+    for(let i=0;i<data.blocked.length;i+=6) {
+        blocked.set(data.blocked[i],data.blocked.subarray(i+1,i+6));
     }
     return {floor:data.floor,walkable:new Set(data.walkable),blocked,origin:start};
 }
@@ -95,31 +105,60 @@ function cellAt(nav,x,y) {
     return navigationKey(x-nav.origin[0],y-nav.origin[1]);
 }
 
-function clearTeleportSegment(nav,from,to) {
-    const dx=to[0]-from[0],dy=to[1]-from[1],dz=to[2]-from[2];
-    const steps=Math.max(1,Math.ceil(Math.hypot(dx,dy)/teleportStep));
-    for(let i=0;i<=steps;i++) {
-        const t=i/steps,z=from[2]+dz*t;
-        const height=nav.blocked.get(cellAt(nav,from[0]+dx*t,from[1]+dy*t));
-        if(height!==undefined&&z>=nav.floor&&z<=nav.floor+height) return false;
+function segmentEntry(start,delta,min,max) {
+    let enter=0,leave=1;
+    for(let axis=0;axis<3;axis++) {
+        if(delta[axis]===0) {
+            if(start[axis]<min[axis]||start[axis]>max[axis]) return Infinity;
+        } else {
+            const a=(min[axis]-start[axis])/delta[axis];
+            const b=(max[axis]-start[axis])/delta[axis];
+            enter=Math.max(enter,Math.min(a,b));
+            leave=Math.min(leave,Math.max(a,b));
+            if(enter>leave) return Infinity;
+        }
     }
-    return true;
+    return enter;
+}
+
+function teleportObstruction(nav,from,to) {
+    const [ox,oy]=nav.origin;
+    const start=[from[0]-ox,from[1]-oy,from[2]-nav.floor];
+    const end=[to[0]-ox,to[1]-oy,to[2]-nav.floor];
+    const delta=end.map((value,i)=>value-start[i]);
+    const left=Math.floor((Math.min(start[0],end[0])-obstaclePadding)/navCellSize);
+    const right=Math.floor((Math.max(start[0],end[0])+obstaclePadding)/navCellSize);
+    const bottom=Math.floor((Math.min(start[1],end[1])-obstaclePadding)/navCellSize);
+    const top=Math.floor((Math.max(start[1],end[1])+obstaclePadding)/navCellSize);
+    let nearest=Infinity;
+    for(let row=bottom;row<=top;row++) {
+        for(let col=left;col<=right;col++) {
+            const obstacle=nav.blocked.get(navigationKey((col+.5)*navCellSize,(row+.5)*navCellSize));
+            if(!obstacle) continue;
+            const [height,x1,y1,x2,y2]=obstacle;
+            nearest=Math.min(nearest,segmentEntry(start,delta,[x1,y1,0],[x2,y2,height]));
+        }
+    }
+    return Number.isFinite(nearest)?from.map((value,i)=>value+delta[i]*nearest):null;
 }
 
 function canLand(nav,x,y) {
     if(!nav.walkable.has(cellAt(nav,x,y))) return false;
     // Check clearance against each occupied cell that overlaps the landing capsule.
     const [ox,oy]=nav.origin;
-    const left=Math.floor((x-ox-landingRadius)/navCellSize);
-    const right=Math.floor((x-ox+landingRadius)/navCellSize);
-    const bottom=Math.floor((y-oy-landingRadius)/navCellSize);
-    const top=Math.floor((y-oy+landingRadius)/navCellSize);
+    const reach=landingRadius+obstaclePadding;
+    const left=Math.floor((x-ox-reach)/navCellSize);
+    const right=Math.floor((x-ox+reach)/navCellSize);
+    const bottom=Math.floor((y-oy-reach)/navCellSize);
+    const top=Math.floor((y-oy+reach)/navCellSize);
     for(let row=bottom;row<=top;row++) {
         for(let col=left;col<=right;col++) {
             const px=ox+col*navCellSize,py=oy+row*navCellSize;
-            const dx=Math.max(px-x,x-px-navCellSize,0),dy=Math.max(py-y,y-py-navCellSize,0);
-            if(dx*dx+dy*dy>=landingRadius**2) continue;
-            if(nav.blocked.has(cellAt(nav,px+navCellSize/2,py+navCellSize/2))) return false;
+            const obstacle=nav.blocked.get(cellAt(nav,px+navCellSize/2,py+navCellSize/2));
+            if(!obstacle) continue;
+            const dx=Math.max(ox+obstacle[1]-x,x-ox-obstacle[3],0);
+            const dy=Math.max(oy+obstacle[2]-y,y-oy-obstacle[4],0);
+            if(dx*dx+dy*dy<landingRadius**2) return false;
         }
     }
 
@@ -144,14 +183,13 @@ function navigationSpawn(nav) {
 
 function validTeleport(nav,from,to) {
     const [x,y]=to;
-    if(!canLand(nav,x,y)) return false;
+    if(!canLand(nav,x,y)||teleportObstruction(nav,[from[0],from[1],nav.floor],to)) return false;
     // The scan has a single inferred floor. Reject crossings of walls and unscanned gaps.
     const dx=x-from[0],dy=y-from[1];
     const steps=Math.max(1,Math.ceil(Math.hypot(dx,dy)/teleportStep));
     for(let i=1;i<=steps;i++) {
         const t=i/steps,px=from[0]+dx*t,py=from[1]+dy*t;
         const cell=cellAt(nav,px,py);
-        if(nav.blocked.has(cell)) return false;
         if(i>3&&!nav.walkable.has(cell)) return false;
     }
     return true;
@@ -181,8 +219,9 @@ function controllerTeleportArc(hand,direction,stabilizer) {
     });
 }
 
-function teleportArcLanding(nav,head,arc) {
-    if(!arc||!clearTeleportSegment(nav,head,arc[0])) return null;
+function teleportArcLanding(nav,head,arc,visible) {
+    if(!arc||teleportObstruction(nav,head,arc[0])) return null;
+    visible?.push(arc[0]);
     for(let i=1;i<arc.length;i++) {
         const from=arc[i-1],to=arc[i];
         const crossesFloor=from[2]>=nav.floor&&to[2]<nav.floor;
@@ -191,7 +230,9 @@ function teleportArcLanding(nav,head,arc) {
             const t=(from[2]-nav.floor)/(from[2]-to[2]);
             end=[from[0]+(to[0]-from[0])*t,from[1]+(to[1]-from[1])*t,nav.floor];
         }
-        if(!clearTeleportSegment(nav,from,end)) return null;
+        const obstruction=teleportObstruction(nav,from,end);
+        visible?.push(obstruction??end);
+        if(obstruction) return null;
         if(crossesFloor) return validTeleport(nav,head,end)?end:null;
     }
     return null;

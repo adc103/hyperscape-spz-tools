@@ -258,6 +258,22 @@ async function createXRGPURenderer(session,src,scale) {
             layout:'auto',vertex:{module:compositeShader,entryPoint:'screen'},
             fragment:{module:compositeShader,entryPoint:'composite',targets:[{format}]}
         });
+        const ribbonShader=device.createShaderModule({code:`
+            struct Vertex {
+                @builtin(position) position: vec4f,
+                @location(0) color: vec3f,
+            }
+            @vertex fn vertex(@location(0) position: vec2f,@location(1) color: vec3f) -> Vertex {
+                return Vertex(vec4f(position,0,1),color);
+            }
+            @fragment fn fragment(v: Vertex) -> @location(0) vec4f { return vec4f(v.color,1); }
+        `});
+        const ribbon=await device.createRenderPipelineAsync({
+            layout:'auto',vertex:{module:ribbonShader,entryPoint:'vertex',buffers:[{arrayStride:20,attributes:[
+                {shaderLocation:0,offset:0,format:'float32x2'},{shaderLocation:1,offset:8,format:'float32x3'}
+            ]}]},fragment:{module:ribbonShader,entryPoint:'fragment',targets:[{format}]}
+        });
+        const ribbonVertices=new Float32Array(teleportRibbonFloats);
         const sampler=device.createSampler({magFilter:'linear',minFilter:'linear'});
         const data=new Float32Array(src.n*16);
         for(let i=0;i<src.n;i++) {
@@ -352,11 +368,26 @@ async function createXRGPURenderer(session,src,scale) {
             pass.draw(3);
             pass.end();
         }
+        function drawRibbon(encoder,entry,eye,viewport,attachment,aim) {
+            if(!aim?.arc.length) return;
+            const count=writeTeleportRibbon(eye,viewport,aim,ribbonVertices);
+            if(!count) return;
+            const vertices=entry.ribbon ||= buffer(ribbonVertices.byteLength,GPUBufferUsage.VERTEX);
+            device.queue.writeBuffer(vertices,0,ribbonVertices,0,count*5);
+            const {x,y,width,height}=viewport;
+            const pass=encoder.beginRenderPass({colorAttachments:[{...attachment,loadOp:'load'}]});
+            pass.setViewport(x,y,width,height,0,1);
+            pass.setPipeline(ribbon);
+            pass.setVertexBuffer(0,vertices);
+            pass.draw(count);
+            pass.end();
+        }
         session.updateRenderState({layers:[layer]});
         return {
             label:'Immersive WebGPU',canTime,
             destroy:()=>device.destroy(),
-            draw(eyes,center,order,marker) {
+            draw(eyes,center,order,aim) {
+                const marker=aim?.target;
                 if(order) {
                     drawCount=order.length;
                     if(drawCount) device.queue.writeBuffer(indices,0,order);
@@ -389,6 +420,7 @@ async function createXRGPURenderer(session,src,scale) {
                         const start=stamp();
                         const timestampWrites=start&&end?{...start,...end}:start??end;
                         renderTarget(encoder,target,eye,focal,center,2,timestampWrites,attachment);
+                        drawRibbon(encoder,entry,eye,image.viewport,attachment,aim);
                         continue;
                     }
                     const front=Number(!!frame.frontToBack);
@@ -400,6 +432,7 @@ async function createXRGPURenderer(session,src,scale) {
                             renderTarget(encoder,entry.low,eye,[focal[0]*.5,focal[1]*.5],center,front,stamp());
                     }
                     composeEye(encoder,entry,eye,dual?entry.low:null,reuse,image,attachment,end,marker);
+                    drawRibbon(encoder,entry,eye,image.viewport,attachment,aim);
                 }
                 if(measure) {
                     encoder.resolveQuerySet(timer.queries,0,2,timer.resolved,0);
