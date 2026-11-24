@@ -45,7 +45,7 @@ function xrEye(xrView, origin, basis) {
 }
 
 function createXRSort(session,origin,onNavigation,onError) {
-    const worker=new Worker('sort-worker.js?v=2');
+    const worker=new Worker('sort-worker.js?v=3');
     const points=model.points.slice(0,model.n*4);
     worker.postMessage({points,origin},[points.buffer]);
     let buffer=new ArrayBuffer(model.n*4), spare=new ArrayBuffer(model.n*4), latest, last, pending=false, failure;

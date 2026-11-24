@@ -21,7 +21,7 @@ The rendering reference also covers native visibility masks, navigation meshes, 
 
 Push the left stick forward to aim the controller. Release when the landing ring is visible to teleport. Walls and gaps in scan coverage cancel the landing. Flick the right stick to turn 30°. Press Menu or Y on the left controller to exit. Menu requires browser support.
 
-VR aligns the estimated scan floor with Quest's tracked floor. The viewer uses one floor level and may move the starting point to nearby clear floor. It derives walkable areas from the SPZ, so sparse scans can limit teleporting.
+VR aligns the estimated scan floor with Quest's tracked floor. The viewer uses one floor level and may move the starting point to nearby clear floor. It derives walkable areas from the SPZ and fills a missing 20 cm cell when all eight neighboring cells contain clear, measured floor. Larger gaps and sparse scans can limit teleporting.
 
 Physical-headset testing is pending.
 

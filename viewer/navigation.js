@@ -60,7 +60,23 @@ function buildNavigation(points,start) {
         }
         if(ground>=4) walkable.push(key);
     }
-    return {floor,walkable:Int32Array.from(walkable),blocked:Int32Array.from(blocked)};
+    const obstructed=new Set(blocked.map(packed=>Math.floor(packed/8)));
+    const filled=fillFloorHoles(walkable,obstructed);
+    return {floor,walkable:Int32Array.from(filled),blocked:Int32Array.from(blocked)};
+}
+
+function fillFloorHoles(walkable,blocked) {
+    const observed=new Set(walkable.filter(key=>!blocked.has(key)));
+    const filled=[...walkable];
+    const neighbors=[-navStride-1,-navStride,-navStride+1,-1,1,navStride-1,navStride,navStride+1];
+    // Each candidate has a measured cell to its left. Use measured floor only
+    // so the fill cannot grow into a larger gap or beyond the scan.
+    for(const left of observed) {
+        const key=left+1;
+        if(key%navStride<=0||key%navStride>=navStride-1||observed.has(key)||blocked.has(key)) continue;
+        if(neighbors.every(offset=>observed.has(key+offset))) filled.push(key);
+    }
+    return filled;
 }
 
 function readNavigation(data,start) {
