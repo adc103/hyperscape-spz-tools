@@ -6,12 +6,18 @@
 | Distance-based detail, 16-bit and 32-bit sorting | Yes | Yes |
 | Stereo | Simulated or calibrated | Headset pose and per-eye projection |
 | Two-resolution composition and frame reuse | Optional | Optional |
-| Adaptive GPU budget | Requires GPU timer queries | Requires GPU timestamp support |
+| Adaptive quality | GPU timer queries when available | GPU timing or headset frame cadence |
 | Color conversion | Per splat or composite | Per splat or composite |
 
 The Quest viewer prefers WebGPU when the browser exposes the WebXR binding. Otherwise it uses immersive WebGL. If WebGPU setup fails, select **Enter VR** again to use WebGL. The status line shows the active backend.
 
 In VR, the headset supplies eye poses, projections, and render size. Frame JSON camera calibration and depth images apply to the preview.
+
+## Quest performance
+
+Performance is the default. It uses 50% render scale, a 35,000-splat starting ceiling, foveated SH, and adaptive quality. Balanced starts at 65% and 65,000 splats. High starts at 85% with the scan's full count available. A worker culls and sorts splats. The GPU projects, shades, blends, and composites both eyes. Two-resolution rendering and frame reuse are optional.
+
+The rendering reference also covers native visibility masks, navigation meshes, and compositor behavior. The SPZ-only viewer uses browser frustum culling and the WebXR compositor. It has no visibility-mask loader or navigation mesh.
 
 Physical-headset testing is pending.
 

@@ -46,8 +46,7 @@ function initialize() {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribDivisor(0,1);
     resources={splat,screen,vao,indices,screenVao};
-    const xrCanTime=$('enterVr')&&typeof XRGPUBinding==='function';
-    $('adaptive').disabled=!gpuTimer&&!xrCanTime;
+    $('adaptive').disabled=!gpuTimer;
 }
 function upload(scan) {
     const {width,height,terms}=scan;
@@ -239,9 +238,12 @@ function compose(full,low,eye,x,width,reprojection,target=null,y=0,height=canvas
     gl.uniform1f(u.clipDepth,eye.far*eye.near/(eye.far-(frame.clipDepth??.99)*(eye.far-eye.near)));
     gl.drawArrays(gl.TRIANGLES,0,3);
 }
-function updateQuality(ms) {
-    if(!$('adaptive').checked||ms<=0) return;
-    const change=Math.max(-.1,Math.min(.1,.2*((frame.gpuBudgetMs??13.8)/ms-1)));
+function adaptiveEnabled() {
+    return immersiveRunning?$('xrAdaptive').checked:$('adaptive').checked;
+}
+function updateQuality(ms,budget=frame.gpuBudgetMs??13.8) {
+    if(!adaptiveEnabled()||ms<=0) return;
+    const change=Math.max(-.1,Math.min(.1,.2*(budget/ms-1)));
     quality=Math.max(.1,Math.min(1,quality*(1+change)));
 }
 function beginGlTiming() {
@@ -254,7 +256,7 @@ function beginGlTiming() {
         activeQuery=null;
     }
     let measuring=false;
-    if(gpuTimer&&!activeQuery&&$('adaptive').checked) {
+    if(gpuTimer&&!activeQuery&&adaptiveEnabled()) {
         activeQuery=gl.createQuery();
         gl.beginQuery(gpuTimer.TIME_ELAPSED_EXT,activeQuery);
         measuring=true;

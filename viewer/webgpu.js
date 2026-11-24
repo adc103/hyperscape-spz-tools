@@ -25,7 +25,7 @@ struct Vertex {
 }
 @group(0) @binding(0) var<uniform> view: Camera;
 @group(0) @binding(1) var<storage, read> splats: array<Splat>;
-@group(0) @binding(2) var<storage, read> sh: array<vec4f>;
+@group(0) @binding(2) var<storage, read> sh: array<vec2u>;
 @group(0) @binding(3) var<storage, read> sorted: array<u32>;
 
 fn rotate(q: vec4f, p: vec3f) -> vec3f {
@@ -112,7 +112,8 @@ fn half3(v: vec3f) -> vec3f { return vec3f(half2(v.xy),half2(vec2f(v.z,0)).x); }
         let band=select(select(2.0,1.0,i<8u),0.0,i<3u);
         let weight=clamp(detail-band,0.0,1.0);
         if weight<=0.0 { break; }
-        var coefficient=sh[i*view.modes.x+index].xyz;
+        let packed=sh[i*view.modes.x+index];
+        var coefficient=vec3f(unpack2x16float(packed.x),unpack2x16float(packed.y).x);
         if (view.modes.w&2u)!=0u {
             coefficient=(clamp(floor(128.0*coefficient+128.5),vec3f(0),vec3f(255))-128.0)/128.0;
         }
@@ -195,6 +196,27 @@ fn previousUV(uv: vec2f) -> vec2f {
 }
 `;
 
+function packGPUCoefficients(values) {
+    if(typeof Float16Array==='function') return new Uint32Array(Float16Array.from(values).buffer);
+    // SH coefficients are bounded. Convert the float32 mantissa to round-to-even FP16.
+    const raw=new Uint32Array(values.buffer,values.byteOffset,values.length);
+    const packed=new Uint16Array(raw.length);
+    for(let i=0;i<raw.length;i++) {
+        const word=raw[i], sign=(word>>>16)&0x8000;
+        const exponent=((word>>>23)&255)-112;
+        const mantissa=word&0x7fffff;
+        if(exponent>0) {
+            packed[i]=sign|((exponent<<10)+((mantissa+0xfff+((mantissa>>>13)&1))>>>13));
+        } else if(exponent>=-10) {
+            const shift=14-exponent, full=mantissa|0x800000;
+            packed[i]=sign|((full+(1<<(shift-1))-1+((full>>>shift)&1))>>>shift);
+        } else {
+            packed[i]=sign;
+        }
+    }
+    return new Uint32Array(packed.buffer);
+}
+
 async function createXRGPURenderer(session,src,scale) {
     const adapter=await navigator.gpu.requestAdapter({xrCompatible:true});
     if(!adapter) throw Error('No WebXR-compatible WebGPU adapter.');
@@ -235,7 +257,8 @@ async function createXRGPURenderer(session,src,scale) {
             return result;
         };
         const splats=buffer(data.byteLength,GPUBufferUsage.STORAGE,data);
-        const coefficients=buffer(src.sh.byteLength,GPUBufferUsage.STORAGE,src.sh);
+        const packedSH=packGPUCoefficients(src.sh);
+        const coefficients=buffer(packedSH.byteLength,GPUBufferUsage.STORAGE,packedSH);
         const indices=buffer(src.n*4,GPUBufferUsage.STORAGE);
         const cache=[];
         const timer=canTime?{
@@ -309,15 +332,17 @@ async function createXRGPURenderer(session,src,scale) {
         return {
             label:'Immersive WebGPU',canTime,
             destroy:()=>device.destroy(),
-            draw(eyes,center) {
-                sortVisible(eyes,center,false);
-                if(drawCount) device.queue.writeBuffer(indices,0,sortData.ids,0,drawCount);
+            draw(eyes,center,order) {
+                if(order) {
+                    drawCount=order.length;
+                    if(drawCount) device.queue.writeBuffer(indices,0,order);
+                }
                 const encoder=device.createCommandEncoder();
                 const images=eyes.map(eye=>binding.getViewSubImage(layer,eye.xrView));
                 const left=images[0].viewport;
                 const focal=[left.width/(2*eyes[0].tan[0]),left.height/(2*eyes[0].tan[1])];
                 const {dual,reuse}=xrFramePlan();
-                const measure=timer&&!timer.pending&&$('adaptive').checked;
+                const measure=timer&&!timer.pending&&adaptiveEnabled();
                 let first=!!measure;
                 const stamp=()=>{
                     if(!first) return undefined;

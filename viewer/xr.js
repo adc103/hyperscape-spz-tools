@@ -44,6 +44,45 @@ function xrEye(xrView, origin, basis) {
     };
 }
 
+function createXRSort(session,cap) {
+    const worker=new Worker('sort-worker.js');
+    const points=model.points.slice(0,model.n*4);
+    worker.postMessage({points},[points.buffer]);
+    let buffer=new ArrayBuffer(model.n*4), spare=new ArrayBuffer(model.n*4), latest, last, pending=false, failure;
+    worker.onmessage=({data})=>{
+        pending=false;
+        latest=new Uint32Array(data.buffer,0,data.count);
+    };
+    worker.onerror=event=>{failure=Error(event.message||'The VR sorting worker stopped.');};
+    session.addEventListener('end',()=>worker.terminate(),{once:true});
+    return (eyes,center,time)=>{
+        if(failure) throw failure;
+        const result=latest;
+        if(result) {
+            latest=null;
+            // Return the completed CPU buffer after the renderer uploads it.
+            buffer=spare;
+            spare=result.buffer;
+        }
+        const lod=detailParameters();
+        const options={detail:$('lod').checked,lod,quality:Math.round(quality*100)/100,narrow:$('sort').value==='16',
+            front:!!frame.frontToBack,cap:Math.max(1,Math.floor(Math.min(cap,frame.maxSplats??model.n)*quality))};
+        const signature=JSON.stringify(options);
+        const eye=eyes[0];
+        const moved=!last||Math.hypot(center[0]-last.center[0],center[1]-last.center[1],center[2]-last.center[2])>.035||
+            dot(eye.f,last.forward)<.9986||dot(eye.right,last.right)<.9986;
+        if(!pending&&(!last||(time-last.time>=24&&(moved||last.signature!==signature)))) {
+            // Keep the completed result readable until this frame has uploaded it.
+            const outgoing=buffer;
+            const poses=eyes.map(({pos,right,down,f,tan,shift,near,far})=>({pos,right,down,f,tan,shift,near,far}));
+            worker.postMessage({...options,eyes:poses,center,buffer:outgoing},[outgoing]);
+            last={time,center,forward:eye.f,right:eye.right,signature};
+            pending=true;
+        }
+        return result;
+    };
+}
+
 async function createXRGlRenderer(session,scale) {
     if(!gl) throw Error('WebGL 2 is unavailable.');
     await gl.makeXRCompatible();
@@ -59,8 +98,12 @@ async function createXRGlRenderer(session,scale) {
                 gl.deleteFramebuffer(part.fb);
             }
         },
-        draw(eyes,center) {
-            sortVisible(eyes,center);
+        draw(eyes,center,order) {
+            if(order) {
+                drawCount=order.length;
+                gl.bindBuffer(gl.ARRAY_BUFFER,resources.indices);
+                gl.bufferData(gl.ARRAY_BUFFER,order,gl.DYNAMIC_DRAW);
+            }
             const viewports=eyes.map(eye=>layer.getViewport(eye.xrView));
             const focal=[viewports[0].width/(2*eyes[0].tan[0]),viewports[0].height/(2*eyes[0].tan[1])];
             gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);
@@ -108,13 +151,19 @@ enter.onclick=async()=>{
         const gpuMode=session.enabledFeatures?.includes('webgpu');
         session.addEventListener('end',()=>{
             renderer?.destroy();
-            $('adaptive').disabled=!gpuTimer&&(!canGpu||webgpuFailed);
             immersiveRunning=false;
             starting=false;
             xrAvailable();
             requestRender();
         },{once:true});
         const scale=Number($('xrScale').value);
+        const performanceMode=scale<=.50;
+        const cap=performanceMode?35000:scale<=.65?65000:model.n;
+        const sorted=createXRSort(session,cap);
+        const previewQuality=quality;
+        drawCount=0;
+        quality=1;
+        session.addEventListener('end',()=>{quality=previewQuality;},{once:true});
         try {
             renderer=gpuMode?await createXRGPURenderer(session,xrSource,scale):await createXRGlRenderer(session,scale);
         } catch(error) {
@@ -127,16 +176,22 @@ enter.onclick=async()=>{
         session.updateRenderState({depthNear:.10,depthFar:1500});
         const space=await session.requestReferenceSpace('local');
         const origin=[...pose.eye];
-        let yaw=pose.yaw,previousTime,failed=false;
+        let yaw=pose.yaw,previousTime,failed=false,average=0,samples=0;
         tick=0;
-        $('adaptive').disabled=!(renderer.canTime??gpuTimer);
+        const gpuTiming=renderer.canTime??!!gpuTimer;
+        const frameBudget=session.frameRate?1000/session.frameRate:1000/72;
         xrStatus.textContent=renderer.label;
         const animate=(time,frame)=>{
             if(failed) return;
             session.requestAnimationFrame(animate);
             const head=frame.getViewerPose(space);
             if(!head?.views.length) return;
-            const dt=Math.min(.05,(time-(previousTime??time))/1000);
+            const elapsed=time-(previousTime??time);
+            const dt=Math.min(.05,elapsed/1000);
+            if(!gpuTiming&&adaptiveEnabled()&&elapsed>0&&elapsed<100) {
+                average=average?average*.9+elapsed*.1:elapsed;
+                if(++samples%12===0) updateQuality(average,frameBudget);
+            }
             previousTime=time;
             const inputs=[...session.inputSources];
             const [strafe,back]=joystick(inputs.find(input=>input.handedness==='left'));
@@ -147,7 +202,7 @@ enter.onclick=async()=>{
             for(let i=0;i<3;i++) origin[i]+=delta[i];
             const eyes=[...head.views].map(view=>xrEye(view,origin,basis));
             const center=eyes[0].pos.map((v,i)=>(v+eyes.at(-1).pos[i])*.5);
-            try {renderer.draw(eyes,center);}
+            try {renderer.draw(eyes,center,sorted(eyes,center,time));}
             catch(error) {
                 failed=true;
                 if(gpuMode) webgpuFailed=true;

@@ -30,13 +30,14 @@
         <p class="hint range-note">RayQuadratic kernel · <a href="https://github.com/adc103/hyperscape-spz-tools/blob/main/docs/rendering.md">Rendering reference</a></p>
         <label class="setting"><span>Mip-Splatting<span class="hint">Reduces shimmer on fine detail.</span></span><input id="mip" type="checkbox" checked></label>
         <label class="setting"><span>Distance-based detail<span class="hint">Draws fewer splats farther away.</span></span><input id="lod" type="checkbox" checked></label>
-        <label class="setting"><span>Foveated SH color<span class="hint">Simplifies view-dependent color at the edges.</span></span><input id="sh" type="checkbox"></label>
+        <label class="setting"><span>Foveated SH color<span class="hint">Simplifies view-dependent color at the edges.</span></span><input id="sh" type="checkbox" checked></label>
         <label class="setting"><span>8-bit SH quantization<span class="hint">Rounds view-dependent color coefficients.</span></span><input id="quant" type="checkbox"></label>
     </section>
     <section aria-labelledby="vr-heading">
         <h2 id="vr-heading">VR</h2>
-        <label class="select-row"><span>Resolution</span><select id="xrScale"><option value="0.65">Balanced</option><option value="0.50">Performance</option><option value="0.85">High</option></select></label>
-        <p class="hint">Left stick to move. Right stick to turn.</p>
+        <label class="select-row"><span>Quality</span><select id="xrScale"><option value="0.50">Performance</option><option value="0.65">Balanced</option><option value="0.85">High</option></select></label>
+        <label class="setting"><span>Adaptive VR quality</span><input id="xrAdaptive" type="checkbox" checked></label>
+        <p class="hint">Performance lowers render resolution and limits splat count. Left stick to move. Right stick to turn.</p>
     </section>
 
     <section aria-labelledby="camera-heading">
@@ -48,7 +49,7 @@
         <summary>Advanced rendering</summary>
         <label class="select-row"><span>Depth sort</span><select id="sort"><option value="32">32-bit</option><option value="16">16-bit</option></select></label>
         <label class="select-row"><span>Convert color to linear</span><select id="color"><option value="0">Off</option><option value="1">Per splat</option><option value="2">Composite</option></select></label>
-        <label class="setting"><span>Adaptive GPU budget</span><input id="adaptive" type="checkbox"></label>
+        <label class="setting"><span>Adaptive preview quality</span><input id="adaptive" type="checkbox"></label>
         <label class="setting"><span>Two-resolution rendering</span><input id="foveation" type="checkbox"></label>
         <label class="select-row"><span>Frame reuse</span><select id="reuse"><option value="0">Off</option><option value="1">Low-resolution layer</option><option value="2">High-resolution layer</option></select></label>
         <div class="actions">
