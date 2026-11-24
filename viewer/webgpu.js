@@ -148,6 +148,7 @@ struct View {
     center: vec4f,
     alpha: vec4f,
     flags: vec4f,
+    marker: vec4f,
 }
 struct ScreenVertex {
     @builtin(position) position: vec4f,
@@ -175,7 +176,8 @@ fn previousUV(uv: vec2f) -> vec2f {
     return sampled;
 }
 @fragment fn composite(v: ScreenVertex) -> @location(0) vec4f {
-    let old=previousUV(v.uv);
+    var old=v.uv;
+    if settings.flags.x!=0.0 { old=previousUV(v.uv); }
     var color=textureSampleLevel(sharp,filtering,select(v.uv,old,settings.flags.x==2.0),0.0);
     if settings.flags.y!=0.0 {
         let low=textureSampleLevel(soft,filtering,select(v.uv,old,settings.flags.x==1.0),0.0);
@@ -192,6 +194,18 @@ fn previousUV(uv: vec2f) -> vec2f {
     var rgb=color.rgb;
     if settings.flags.z!=0.0 { rgb=pow(max(rgb,vec3f(0)),vec3f(2.2)); }
     if (settings.flags.w==2.0 || settings.flags.w==3.0) && color.a>0.0 { rgb/=color.a; }
+    if settings.marker.w>0.0 {
+        let ndc=vec2f(v.uv.x*2.0-1.0,1.0-v.uv.y*2.0);
+        let p=(ndc-settings.lens.zw)*settings.lens.xy;
+        let ray=settings.right.xyz*p.x-settings.down.xyz*p.y+settings.forward.xyz;
+        if ray.z<-.001 {
+            let depth=(settings.marker.z-settings.eye.z)/ray.z;
+            let radius=length(settings.eye.xy+depth*ray.xy-settings.marker.xy);
+            if depth>0.0 && radius>.16 && radius<.23 {
+                rgb=mix(rgb,vec3f(.92,.81,.44),.95);
+            }
+        }
+    }
     return vec4f(rgb,1);
 }
 `;
@@ -230,11 +244,12 @@ async function createXRGPURenderer(session,src,scale) {
         const binding=new XRGPUBinding(session,device);
         const format=binding.getPreferredColorFormat();
         const layer=binding.createProjectionLayer({colorFormat:format,scaleFactor:scale});
-        const pipelines=await Promise.all([false,true].map(front=>{
+        const pipelines=await Promise.all(['rgba8unorm','rgba8unorm',format].map((targetFormat,index)=>{
+            const front=index===1;
             const blend=front?{srcFactor:'one-minus-dst-alpha',dstFactor:'one'}:{srcFactor:'one',dstFactor:'one-minus-src-alpha'};
             return device.createRenderPipelineAsync({
                 layout:'auto',vertex:{module:shader,entryPoint:'vertex'},
-                fragment:{module:shader,entryPoint:'fragment',targets:[{format:'rgba8unorm',blend:{color:blend,alpha:blend}}]},
+                fragment:{module:shader,entryPoint:'fragment',targets:[{format:targetFormat,blend:{color:blend,alpha:blend}}]},
                 primitive:{topology:'triangle-strip'}
             });
         }));
@@ -268,15 +283,16 @@ async function createXRGPURenderer(session,src,scale) {
             pending:false
         }:null;
         const packed=new Float32Array(52),mode=new Uint32Array(packed.buffer,36*4,4);
-        const screen=new Float32Array(52);
+        const screen=new Float32Array(56);
         function makeTarget(old,width,height) {
             if(old?.width===width&&old.height===height) return old;
             old?.texture.destroy();
             const texture=device.createTexture({size:[width,height],format:'rgba8unorm',
                 usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING});
-            return {width,height,texture,view:texture.createView(),uniform:old?.uniform??buffer(208,GPUBufferUsage.UNIFORM)};
+            return {width,height,texture,view:texture.createView(),
+                uniform:old?.uniform??buffer(208,GPUBufferUsage.UNIFORM),bindings:old?.bindings??[]};
         }
-        function renderTarget(encoder,target,eye,focal,center,front,timestampWrites) {
+        function renderTarget(encoder,target,eye,focal,center,pipelineIndex,timestampWrites,output) {
             target.eye=eye;
             packed.set(eye.xrView.projectionMatrix,0);
             packed.set(eye.pos,16);packed.set(eye.right,20);
@@ -289,18 +305,22 @@ async function createXRGPURenderer(session,src,scale) {
             mode.set([src.width*src.height,src.degree,Number($('mip').checked),
                 Number($('sh').checked)|Number($('quant').checked)*2|Number($('color').value==='1')*4]);
             device.queue.writeBuffer(target.uniform,0,packed);
-            const pipeline=pipelines[Number(front)];
-            const bind=device.createBindGroup({layout:pipeline.getBindGroupLayout(0),
+            const pipeline=pipelines[pipelineIndex];
+            const bind=target.bindings[pipelineIndex] ||= device.createBindGroup({layout:pipeline.getBindGroupLayout(0),
                 entries:[target.uniform,splats,coefficients,indices].map((buffer,binding)=>({binding,resource:{buffer}}))});
-            const pass=encoder.beginRenderPass({timestampWrites,colorAttachments:[{
+            const pass=encoder.beginRenderPass({timestampWrites,colorAttachments:[output??{
                 view:target.view,loadOp:'clear',storeOp:'store',clearValue:[0,0,0,0]
             }]});
+            if(output) {
+                const {x,y,width,height}=target.viewport;
+                pass.setViewport(x,y,width,height,0,1);
+            }
             pass.setPipeline(pipeline);
             pass.setBindGroup(0,bind);
             pass.draw(4,drawCount);
             pass.end();
         }
-        function composeEye(encoder,entry,eye,low,reuse,image,loadOp,timestampWrites) {
+        function composeEye(encoder,entry,eye,low,reuse,image,attachment,timestampWrites,marker) {
             const previous=(reuse===1?low:entry.full)?.eye??eye;
             for(const [i,v] of [eye,previous].entries()) {
                 const offset=i*16;
@@ -313,18 +333,22 @@ async function createXRGPURenderer(session,src,scale) {
             screen.set([...eye.peripheral,clip,alpha?.cutoff??0],40);
             screen.set([alpha?.power??1,alpha?.threshold??1,alpha?.boost??1,alpha?.offset??0],44);
             screen.set([reuse,Number(!!low),Number($('color').value==='2'),alpha?(alpha.unpremultiply?3:1):0],48);
+            screen.set(marker?[...marker,1]:[0,0,0,0],52);
             device.queue.writeBuffer(entry.uniform,0,screen);
-            const bind=device.createBindGroup({layout:composite.getBindGroupLayout(0),entries:[
-                {binding:0,resource:{buffer:entry.uniform}},{binding:1,resource:sampler},
-                {binding:2,resource:entry.full.view},{binding:3,resource:(low??entry.full).view}
-            ]});
+            const sharp=entry.full.view,soft=(low??entry.full).view;
+            if(entry.sharp!==sharp||entry.soft!==soft) {
+                entry.sharp=sharp;
+                entry.soft=soft;
+                entry.composite=device.createBindGroup({layout:composite.getBindGroupLayout(0),entries:[
+                    {binding:0,resource:{buffer:entry.uniform}},{binding:1,resource:sampler},
+                    {binding:2,resource:sharp},{binding:3,resource:soft}
+                ]});
+            }
             const {x,y,width,height}=image.viewport;
-            const pass=encoder.beginRenderPass({timestampWrites,colorAttachments:[{
-                view:image.colorTexture.createView(image.getViewDescriptor()),loadOp,storeOp:'store',clearValue:[0,0,0,1]
-            }]});
+            const pass=encoder.beginRenderPass({timestampWrites,colorAttachments:[attachment]});
             pass.setViewport(x,y,width,height,0,1);
             pass.setPipeline(composite);
-            pass.setBindGroup(0,bind);
+            pass.setBindGroup(0,entry.composite);
             pass.draw(3);
             pass.end();
         }
@@ -332,7 +356,7 @@ async function createXRGPURenderer(session,src,scale) {
         return {
             label:'Immersive WebGPU',canTime,
             destroy:()=>device.destroy(),
-            draw(eyes,center,order) {
+            draw(eyes,center,order,marker) {
                 if(order) {
                     drawCount=order.length;
                     if(drawCount) device.queue.writeBuffer(indices,0,order);
@@ -349,10 +373,25 @@ async function createXRGPURenderer(session,src,scale) {
                     first=false;
                     return {querySet:timer.queries,beginningOfPassWriteIndex:0};
                 };
+                const offscreen=xrNeedsComposite(dual,marker);
+                const descriptors=images.map(image=>image.getViewDescriptor());
                 for(const [i,eye] of eyes.entries()) {
                     const image=images[i],{width,height}=image.viewport;
-                    const entry=cache[i] ||= {uniform:buffer(208,GPUBufferUsage.UNIFORM)};
-                    const front=!!frame.frontToBack;
+                    const entry=cache[i] ||= {uniform:buffer(224,GPUBufferUsage.UNIFORM)};
+                    const shared=i>0&&images[0].colorTexture===image.colorTexture&&
+                        descriptors[0].baseArrayLayer===descriptors[i].baseArrayLayer;
+                    const attachment={view:image.colorTexture.createView(descriptors[i]),loadOp:shared?'load':'clear',
+                        storeOp:'store',clearValue:[0,0,0,1]};
+                    const end=measure&&i===eyes.length-1?{querySet:timer.queries,endOfPassWriteIndex:1}:undefined;
+                    if(!offscreen) {
+                        const target=entry.direct ||= {uniform:buffer(208,GPUBufferUsage.UNIFORM),bindings:[]};
+                        target.viewport=image.viewport;
+                        const start=stamp();
+                        const timestampWrites=start&&end?{...start,...end}:start??end;
+                        renderTarget(encoder,target,eye,focal,center,2,timestampWrites,attachment);
+                        continue;
+                    }
+                    const front=Number(!!frame.frontToBack);
                     entry.full=makeTarget(entry.full,width,height);
                     if(reuse!==2||!entry.full.eye) renderTarget(encoder,entry.full,eye,focal,center,front,stamp());
                     if(dual) {
@@ -360,10 +399,7 @@ async function createXRGPURenderer(session,src,scale) {
                         if(reuse!==1||!entry.low.eye)
                             renderTarget(encoder,entry.low,eye,[focal[0]*.5,focal[1]*.5],center,front,stamp());
                     }
-                    const shared=i>0&&images[0].colorTexture===image.colorTexture&&
-                        images[0].getViewDescriptor().baseArrayLayer===image.getViewDescriptor().baseArrayLayer;
-                    const end=measure&&i===eyes.length-1?{querySet:timer.queries,endOfPassWriteIndex:1}:undefined;
-                    composeEye(encoder,entry,eye,dual?entry.low:null,reuse,image,shared?'load':'clear',end);
+                    composeEye(encoder,entry,eye,dual?entry.low:null,reuse,image,attachment,end,marker);
                 }
                 if(measure) {
                     encoder.resolveQuerySet(timer.queries,0,2,timer.resolved,0);

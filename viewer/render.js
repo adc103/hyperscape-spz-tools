@@ -170,11 +170,15 @@ function bindTexture(unit,target,texture,uniform) {
     gl.bindTexture(target,texture);
     gl.uniform1i(uniform,unit);
 }
-function drawLayer(layer, eye, focal, detailEye) {
+function drawLayer(layer, eye, focal, detailEye, viewport) {
     gl.bindFramebuffer(gl.FRAMEBUFFER,layer.fb);
-    gl.viewport(0,0,layer.width,layer.height);
-    gl.clearColor(0,0,0,0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    if(viewport) {
+        gl.viewport(viewport.x,viewport.y,viewport.width,viewport.height);
+    } else {
+        gl.viewport(0,0,layer.width,layer.height);
+        gl.clearColor(0,0,0,0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+    }
     gl.enable(gl.BLEND);
     if(frame.frontToBack) gl.blendFunc(gl.ONE_MINUS_DST_ALPHA,gl.ONE);
     else gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
@@ -208,7 +212,7 @@ function drawLayer(layer, eye, focal, detailEye) {
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP,0,4,drawCount);
     layer.eye=eye;
 }
-function compose(full,low,eye,x,width,reprojection,target=null,y=0,height=canvas.height) {
+function compose(full,low,eye,x,width,reprojection,target=null,y=0,height=canvas.height,marker=null) {
     gl.bindFramebuffer(gl.FRAMEBUFFER,target);
     gl.viewport(x,y,width,height);
     gl.disable(gl.BLEND);
@@ -235,6 +239,7 @@ function compose(full,low,eye,x,width,reprojection,target=null,y=0,height=canvas
     gl.uniform2fv(u.shift,eye.shift);
     gl.uniform2fv(u.prevShift,prev.shift);
     gl.uniform2fv(u.peripheralCenter,eye.peripheral);
+    gl.uniform4f(u.teleportMarker,marker?.[0]??0,marker?.[1]??0,marker?.[2]??0,Number(!!marker));
     gl.uniform1f(u.clipDepth,eye.far*eye.near/(eye.far-(frame.clipDepth??.99)*(eye.far-eye.near)));
     gl.drawArrays(gl.TRIANGLES,0,3);
 }

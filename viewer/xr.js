@@ -83,12 +83,16 @@ function createXRSort(session,cap) {
     };
 }
 
+function xrNeedsComposite(dual,marker) {
+    return dual||!!marker||!!frame.alpha||!!frame.frontToBack||$('color').value==='2';
+}
+
 async function createXRGlRenderer(session,scale) {
     if(!gl) throw Error('WebGL 2 is unavailable.');
     await gl.makeXRCompatible();
     const layer=new XRWebGLLayer(session,gl,{alpha:false,antialias:false,depth:false,framebufferScaleFactor:scale});
     session.updateRenderState({baseLayer:layer});
-    const layers=[];
+    const layers=[],output={};
     return {
         label:'Immersive WebGL',
         destroy() {
@@ -98,7 +102,7 @@ async function createXRGlRenderer(session,scale) {
                 gl.deleteFramebuffer(part.fb);
             }
         },
-        draw(eyes,center,order) {
+        draw(eyes,center,order,target) {
             if(order) {
                 drawCount=order.length;
                 gl.bindBuffer(gl.ARRAY_BUFFER,resources.indices);
@@ -106,14 +110,20 @@ async function createXRGlRenderer(session,scale) {
             }
             const viewports=eyes.map(eye=>layer.getViewport(eye.xrView));
             const focal=[viewports[0].width/(2*eyes[0].tan[0]),viewports[0].height/(2*eyes[0].tan[1])];
-            gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);
+            output.fb=layer.framebuffer;
+            gl.bindFramebuffer(gl.FRAMEBUFFER,output.fb);
             gl.clearColor(0,0,0,1);
             gl.clear(gl.COLOR_BUFFER_BIT);
             const {dual,reuse}=xrFramePlan();
+            const offscreen=xrNeedsComposite(dual,target);
             const measuring=beginGlTiming();
             try {
                 for(const [i,eye] of eyes.entries()) {
                     const {x,y,width,height}=viewports[i];
+                    if(!offscreen) {
+                        drawLayer(output,eye,focal,center,viewports[i]);
+                        continue;
+                    }
                     const cache=layers[i] ||= {};
                     cache.full=makeLayer(cache.full,width,height);
                     if(reuse!==2||!cache.full.eye) drawLayer(cache.full,eye,focal,center);
@@ -121,7 +131,7 @@ async function createXRGlRenderer(session,scale) {
                         cache.low=makeLayer(cache.low,Math.max(1,width>>1),Math.max(1,height>>1));
                         if(reuse!==1||!cache.low.eye) drawLayer(cache.low,eye,[focal[0]*.5,focal[1]*.5],center);
                     }
-                    compose(cache.full,dual?cache.low:null,eye,x,width,reuse,layer.framebuffer,y,height);
+                    compose(cache.full,dual?cache.low:null,eye,x,width,reuse,output.fb,y,height,target);
                 }
             } finally {
                 if(measuring) gl.endQuery(gpuTimer.TIME_ELAPSED_EXT);
@@ -131,17 +141,66 @@ async function createXRGlRenderer(session,scale) {
 }
 
 function joystick(input) {
-    const a=input?.gamepad?.axes;
-    if(!a?.length) return [0,0];
-    const dead=value=>Math.abs(value)>.18?value:0;
-    return [dead(a[a.length-2]||0),dead(a[a.length-1]||0)];
+    const axes=input?.gamepad?.axes;
+    return axes?.length>=2?[axes[axes.length-2],axes[axes.length-1]]:[0,0];
+}
+
+function teleportTarget(frame,space,input,head,basis,origin,floor) {
+    const aim=input?.targetRaySpace&&frame.getPose(input.targetRaySpace,space)?.transform.matrix;
+    const m=aim??head.transform.matrix;
+    const direction=toWorld(-m[8],-m[9],-m[10],basis);
+    const horizontal=Math.hypot(direction[0],direction[1]);
+    if(horizontal<.12||direction[2]>.45) return null;
+    const hand=toWorld(m[12],m[13],m[14],basis);
+    const distance=direction[2]<-.12
+        ?Math.max(.35,Math.min(5,(origin[2]+hand[2]-floor)*horizontal/-direction[2]))
+        :2.5;
+    return [origin[0]+hand[0]+direction[0]/horizontal*distance,
+        origin[1]+hand[1]+direction[1]/horizontal*distance,floor];
+}
+
+function createLocomotion(origin,startYaw) {
+    let yaw=startYaw, turnHeld=false, aimHeld=false, target=null;
+    const floor=origin[2]-1.6;
+    return (frame,space,head,inputs)=>{
+        let changed=false;
+        const left=[...inputs].find(input=>input.handedness==='left');
+        const right=[...inputs].find(input=>input.handedness==='right');
+        const [turn]=joystick(right), [,forward]=joystick(left);
+        const {x,y,z}=head.transform.position;
+        if(Math.abs(turn)<.3) turnHeld=false;
+        if(!turnHeld&&Math.abs(turn)>.7) {
+            turnHeld=true;
+            const before=toWorld(x,y,z,worldBasis(yaw));
+            yaw-=Math.sign(turn)*Math.PI/6;
+            const after=toWorld(x,y,z,worldBasis(yaw));
+            origin[0]+=before[0]-after[0];
+            origin[1]+=before[1]-after[1];
+            changed=true;
+        }
+        const basis=worldBasis(yaw);
+        if(left&&forward<-.65) aimHeld=true;
+        if(aimHeld&&left&&forward<-.25) {
+            target=teleportTarget(frame,space,left,head,basis,origin,floor);
+        } else if(aimHeld) {
+            if(left&&Math.abs(forward)<.25&&target) {
+                const offset=toWorld(x,y,z,basis);
+                origin[0]=target[0]-offset[0];
+                origin[1]=target[1]-offset[1];
+                changed=true;
+            }
+            aimHeld=false;
+            target=null;
+        }
+        return {basis,target,changed};
+    };
 }
 
 enter.onclick=async()=>{
     if(!model||starting||immersiveRunning) return;
     starting=true;
     xrAvailable();
-    let session,renderer;
+    let session,renderer,failed=false,totalTime=0,frames=0;
     try {
         const wantsGpu=canGpu&&xrSource&&!webgpuFailed;
         session=await navigator.xr.requestSession('immersive-vr',{
@@ -150,6 +209,10 @@ enter.onclick=async()=>{
         immersiveRunning=true;
         const gpuMode=session.enabledFeatures?.includes('webgpu');
         session.addEventListener('end',()=>{
+            if(renderer&&!failed&&frames>1) {
+                const rate=(1000*frames/totalTime).toFixed(1);
+                xrStatus.textContent=renderer.label+' · '+rate+' XR frames/s last session';
+            }
             renderer?.destroy();
             immersiveRunning=false;
             starting=false;
@@ -176,7 +239,8 @@ enter.onclick=async()=>{
         session.updateRenderState({depthNear:.10,depthFar:1500});
         const space=await session.requestReferenceSpace('local');
         const origin=[...pose.eye];
-        let yaw=pose.yaw,previousTime,failed=false,average=0,samples=0;
+        const move=createLocomotion(origin,pose.yaw);
+        let previousTime,average=0,samples=0;
         tick=0;
         const gpuTiming=renderer.canTime??!!gpuTimer;
         const frameBudget=session.frameRate?1000/session.frameRate:1000/72;
@@ -187,22 +251,20 @@ enter.onclick=async()=>{
             const head=frame.getViewerPose(space);
             if(!head?.views.length) return;
             const elapsed=time-(previousTime??time);
-            const dt=Math.min(.05,elapsed/1000);
+            if(elapsed>0&&elapsed<250) {
+                totalTime+=elapsed;
+                frames++;
+            }
             if(!gpuTiming&&adaptiveEnabled()&&elapsed>0&&elapsed<100) {
                 average=average?average*.9+elapsed*.1:elapsed;
                 if(++samples%12===0) updateQuality(average,frameBudget);
             }
             previousTime=time;
-            const inputs=[...session.inputSources];
-            const [strafe,back]=joystick(inputs.find(input=>input.handedness==='left'));
-            const [turn]=joystick(inputs.find(input=>input.handedness==='right'));
-            yaw-=turn*dt*1.8;
-            const basis=worldBasis(yaw);
-            const delta=toWorld(strafe*dt*1.35,0,back*dt*1.35,basis);
-            for(let i=0;i<3;i++) origin[i]+=delta[i];
+            const {basis,target,changed}=move(frame,space,head,session.inputSources);
+            if(changed) tick=0;
             const eyes=[...head.views].map(view=>xrEye(view,origin,basis));
             const center=eyes[0].pos.map((v,i)=>(v+eyes.at(-1).pos[i])*.5);
-            try {renderer.draw(eyes,center,sorted(eyes,center,time));}
+            try {renderer.draw(eyes,center,sorted(eyes,center,time),target);}
             catch(error) {
                 failed=true;
                 if(gpuMode) webgpuFailed=true;

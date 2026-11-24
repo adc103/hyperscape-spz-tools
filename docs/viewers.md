@@ -15,9 +15,11 @@ In VR, the headset supplies eye poses, projections, and render size. Frame JSON 
 
 ## Quest performance
 
-Performance is the default. It uses 50% render scale, a 35,000-splat starting ceiling, foveated SH, and adaptive quality. Balanced starts at 65% and 65,000 splats. High starts at 85% with the scan's full count available. A worker culls and sorts splats. The GPU projects, shades, blends, and composites both eyes. Two-resolution rendering and frame reuse are optional.
+Performance is the default. It uses 50% render scale, a 35,000-splat starting ceiling, foveated SH, and adaptive quality. Balanced starts at 65% and 65,000 splats. High starts at 85% with the scan's full count available. A worker culls and sorts splats. The GPU projects, shades, and blends both eyes. VR draws directly to the headset when no compositing effects are active. Two-resolution rendering and frame reuse are optional.
 
 The rendering reference also covers native visibility masks, navigation meshes, and compositor behavior. The SPZ-only viewer uses browser frustum culling and the WebXR compositor. It has no visibility-mask loader or navigation mesh.
+
+VR movement uses 30° snap turns. Push the left stick forward to aim and release to teleport. The target uses a level floor estimated from the starting view.
 
 Physical-headset testing is pending.
 

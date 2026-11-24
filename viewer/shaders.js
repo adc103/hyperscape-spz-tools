@@ -134,6 +134,7 @@ uniform vec3 eye, prevEye;
 uniform mat3 camera, prevCamera;
 uniform vec2 tangent, shift, prevTangent, prevShift;
 uniform float clipDepth;
+uniform vec4 teleportMarker;
 uniform vec2 peripheralCenter;
 vec2 previousUV() {
     vec2 p=(uv*2.0-1.0-shift)*tangent;
@@ -160,5 +161,15 @@ void main() {
     if(full.a<alphaCutoff) full=vec4(0);
     vec3 rgb=compositeColor ? pow(max(full.rgb,vec3(0)),vec3(2.2)) : full.rgb;
     if(unpremultiply && full.a>0.0) rgb/=full.a;
+    if(teleportMarker.w>0.0) {
+        vec2 p=(uv*2.0-1.0-shift)*tangent;
+        vec3 ray=transpose(camera)*vec3(p.x,-p.y,1.0);
+        if(ray.z<-.001) {
+            float depth=(teleportMarker.z-eye.z)/ray.z;
+            float radius=length(eye.xy+depth*ray.xy-teleportMarker.xy);
+            if(depth>0.0 && radius>.16 && radius<.23)
+                rgb=mix(rgb,vec3(.92,.81,.44),.95);
+        }
+    }
     result=vec4(rgb,1);
 }`;
