@@ -53,7 +53,8 @@ async function createXRGlRenderer(session,scale) {
     return {
         label:'Immersive WebGL',
         destroy() {
-            for(const part of layers) {
+            for(const eye of layers) for(const part of [eye.full,eye.low]) {
+                if(!part) continue;
                 gl.deleteTexture(part.texture);
                 gl.deleteFramebuffer(part.fb);
             }
@@ -65,11 +66,22 @@ async function createXRGlRenderer(session,scale) {
             gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);
             gl.clearColor(0,0,0,1);
             gl.clear(gl.COLOR_BUFFER_BIT);
-            for(const [i,eye] of eyes.entries()) {
-                const {x,y,width,height}=viewports[i];
-                layers[i]=makeLayer(layers[i],width,height);
-                drawLayer(layers[i],eye,focal,center);
-                compose(layers[i],null,eye,x,width,0,layer.framebuffer,y,height);
+            const {dual,reuse}=xrFramePlan();
+            const measuring=beginGlTiming();
+            try {
+                for(const [i,eye] of eyes.entries()) {
+                    const {x,y,width,height}=viewports[i];
+                    const cache=layers[i] ||= {};
+                    cache.full=makeLayer(cache.full,width,height);
+                    if(reuse!==2||!cache.full.eye) drawLayer(cache.full,eye,focal,center);
+                    if(dual) {
+                        cache.low=makeLayer(cache.low,Math.max(1,width>>1),Math.max(1,height>>1));
+                        if(reuse!==1||!cache.low.eye) drawLayer(cache.low,eye,[focal[0]*.5,focal[1]*.5],center);
+                    }
+                    compose(cache.full,dual?cache.low:null,eye,x,width,reuse,layer.framebuffer,y,height);
+                }
+            } finally {
+                if(measuring) gl.endQuery(gpuTimer.TIME_ELAPSED_EXT);
             }
         }
     };
@@ -96,6 +108,7 @@ enter.onclick=async()=>{
         const gpuMode=session.enabledFeatures?.includes('webgpu');
         session.addEventListener('end',()=>{
             renderer?.destroy();
+            $('adaptive').disabled=!gpuTimer&&(!canGpu||webgpuFailed);
             immersiveRunning=false;
             starting=false;
             xrAvailable();
@@ -115,6 +128,8 @@ enter.onclick=async()=>{
         const space=await session.requestReferenceSpace('local');
         const origin=[...pose.eye];
         let yaw=pose.yaw,previousTime,failed=false;
+        tick=0;
+        $('adaptive').disabled=!(renderer.canTime??gpuTimer);
         xrStatus.textContent=renderer.label;
         const animate=(time,frame)=>{
             if(failed) return;

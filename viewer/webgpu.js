@@ -7,6 +7,9 @@ struct Camera {
     forward: vec4f,
     setup: vec4f,
     modes: vec4u,
+    peripheral: vec4f,
+    lod: vec4f,
+    detailEye: vec4f,
 }
 struct Splat {
     point: vec4f,
@@ -44,7 +47,13 @@ fn half3(v: vec3f) -> vec3f { return vec3f(half2(v.xy),half2(vec2f(v.z,0)).x); }
     let q=splat.rotation;
     let p=rotate(vec4f(-q.xyz,q.w),dir);
     let scale=splat.scale.xyz;
-    let bias=select(0.0,0.1*dot(p,p)/abs(view.setup.x*view.setup.y),view.modes.z!=0u);
+    var factor=1.0;
+    if view.peripheral.x>0.0 && view.peripheral.y>0.0 {
+        let clip=view.projection*vec4f(center.x,-center.y,-center.z,1);
+        let r=length(clip.xy/clip.w-view.peripheral.zw)*.5;
+        factor+=smoothstep(view.peripheral.x*(1.0-view.peripheral.y*.01),view.peripheral.x,r);
+    }
+    let bias=select(0.0,0.1*dot(p,p)*factor*factor/abs(view.setup.x*view.setup.y),view.modes.z!=0u);
     let filtered=sqrt(scale*scale+vec3f(bias));
     let white=p/filtered;
     let c=length(white);
@@ -60,6 +69,12 @@ fn half3(v: vec3f) -> vec3f { return vec3f(half2(v.xy),half2(vec2f(v.z,0)).x); }
     if k<=0.0 || c16*c16<=k { return rejected; }
     let extent=sqrt(k*c16*c16/(c16*c16-k));
     if opacity<0.20 { opacity*=1.0-clamp((center.z-5.0)/4.0,0.0,1.0); }
+    if view.setup.z>0.0 {
+        let distance=length(splat.point.xyz-view.detailEye.xyz);
+        let t=clamp((distance-view.lod.x)/(view.lod.y-view.lod.x),0.0,1.0);
+        let fraction=mix(view.lod.z,view.lod.w,t)*view.detailEye.w;
+        opacity*=clamp((fraction-f32(index)/view.setup.w)/view.setup.z,0.0,1.0);
+    }
     if opacity<0.0625 { return rejected; }
 
     let normal=white/c;
@@ -117,10 +132,74 @@ fn half3(v: vec3f) -> vec3f { return vec3f(half2(v.xy),half2(vec2f(v.z,0)).x); }
 }
 `;
 
+const xrCompositeWGSL = `
+struct View {
+    eye: vec4f,
+    right: vec4f,
+    down: vec4f,
+    forward: vec4f,
+    previousEye: vec4f,
+    previousRight: vec4f,
+    previousDown: vec4f,
+    previousForward: vec4f,
+    lens: vec4f,
+    previousLens: vec4f,
+    center: vec4f,
+    alpha: vec4f,
+    flags: vec4f,
+}
+struct ScreenVertex {
+    @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
+}
+@group(0) @binding(0) var<uniform> settings: View;
+@group(0) @binding(1) var filtering: sampler;
+@group(0) @binding(2) var sharp: texture_2d<f32>;
+@group(0) @binding(3) var soft: texture_2d<f32>;
+
+@vertex fn screen(@builtin(vertex_index) id: u32) -> ScreenVertex {
+    let uv=vec2f(f32((id<<1u)&2u),f32(id&2u));
+    return ScreenVertex(vec4f(uv.x*2.0-1.0,1.0-uv.y*2.0,0,1),uv);
+}
+fn previousUV(uv: vec2f) -> vec2f {
+    let ndc=vec2f(uv.x*2.0-1.0,1.0-uv.y*2.0);
+    let ray=(ndc-settings.lens.zw)*settings.lens.xy;
+    let world=settings.eye.xyz+settings.center.z*(settings.right.xyz*ray.x-settings.down.xyz*ray.y+settings.forward.xyz);
+    let delta=world-settings.previousEye.xyz;
+    let depth=dot(delta,settings.previousForward.xyz);
+    if depth<=0.0 { return uv; }
+    let old=(vec2f(dot(delta,settings.previousRight.xyz),-dot(delta,settings.previousDown.xyz))/depth/settings.previousLens.xy)+settings.previousLens.zw;
+    let sampled=vec2f(old.x*.5+.5,.5-old.y*.5);
+    if any(sampled<vec2f(0)) || any(sampled>vec2f(1)) { return uv; }
+    return sampled;
+}
+@fragment fn composite(v: ScreenVertex) -> @location(0) vec4f {
+    let old=previousUV(v.uv);
+    var color=textureSampleLevel(sharp,filtering,select(v.uv,old,settings.flags.x==2.0),0.0);
+    if settings.flags.y!=0.0 {
+        let low=textureSampleLevel(soft,filtering,select(v.uv,old,settings.flags.x==1.0),0.0);
+        let ndc=vec2f(v.uv.x*2.0-1.0,1.0-v.uv.y*2.0);
+        let radius=length((ndc-settings.center.xy)*settings.lens.xy);
+        color=mix(color,low,smoothstep(.45,.85,radius));
+    }
+    if settings.flags.w!=0.0 && color.a>0.0 {
+        var a=pow(color.a,settings.alpha.x);
+        if a>settings.alpha.y { a=clamp(settings.alpha.z*a-settings.alpha.w,0.0,1.0); }
+        color=vec4f(color.rgb*(a/color.a),a);
+    }
+    if color.a<settings.center.w { color=vec4f(0); }
+    var rgb=color.rgb;
+    if settings.flags.z!=0.0 { rgb=pow(max(rgb,vec3f(0)),vec3f(2.2)); }
+    if (settings.flags.w==2.0 || settings.flags.w==3.0) && color.a>0.0 { rgb/=color.a; }
+    return vec4f(rgb,1);
+}
+`;
+
 async function createXRGPURenderer(session,src,scale) {
     const adapter=await navigator.gpu.requestAdapter({xrCompatible:true});
     if(!adapter) throw Error('No WebXR-compatible WebGPU adapter.');
-    const device=await adapter.requestDevice();
+    const canTime=adapter.features.has('timestamp-query');
+    const device=await adapter.requestDevice({requiredFeatures:canTime?['timestamp-query']:[]});
     try {
         const shader=device.createShaderModule({code:rayQuadraticWGSL});
         const compilation=await shader.getCompilationInfo();
@@ -129,13 +208,20 @@ async function createXRGPURenderer(session,src,scale) {
         const binding=new XRGPUBinding(session,device);
         const format=binding.getPreferredColorFormat();
         const layer=binding.createProjectionLayer({colorFormat:format,scaleFactor:scale});
-        const pipeline=await device.createRenderPipelineAsync({
-            layout:'auto', vertex:{module:shader,entryPoint:'vertex'},
-            fragment:{module:shader,entryPoint:'fragment',targets:[{format,blend:{
-                color:{srcFactor:'one',dstFactor:'one-minus-src-alpha'},
-                alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha'}
-            }}]}, primitive:{topology:'triangle-strip'}
+        const pipelines=await Promise.all([false,true].map(front=>{
+            const blend=front?{srcFactor:'one-minus-dst-alpha',dstFactor:'one'}:{srcFactor:'one',dstFactor:'one-minus-src-alpha'};
+            return device.createRenderPipelineAsync({
+                layout:'auto',vertex:{module:shader,entryPoint:'vertex'},
+                fragment:{module:shader,entryPoint:'fragment',targets:[{format:'rgba8unorm',blend:{color:blend,alpha:blend}}]},
+                primitive:{topology:'triangle-strip'}
+            });
+        }));
+        const compositeShader=device.createShaderModule({code:xrCompositeWGSL});
+        const composite=await device.createRenderPipelineAsync({
+            layout:'auto',vertex:{module:compositeShader,entryPoint:'screen'},
+            fragment:{module:compositeShader,entryPoint:'composite',targets:[{format}]}
         });
+        const sampler=device.createSampler({magFilter:'linear',minFilter:'linear'});
         const data=new Float32Array(src.n*16);
         for(let i=0;i<src.n;i++) {
             for(const [j,attribute] of ['points','scales','rotations','dc'].entries()) {
@@ -151,16 +237,77 @@ async function createXRGPURenderer(session,src,scale) {
         const splats=buffer(data.byteLength,GPUBufferUsage.STORAGE,data);
         const coefficients=buffer(src.sh.byteLength,GPUBufferUsage.STORAGE,src.sh);
         const indices=buffer(src.n*4,GPUBufferUsage.STORAGE);
-        const views=[0,1].map(()=>{
-            const uniform=buffer(160,GPUBufferUsage.UNIFORM);
+        const cache=[];
+        const timer=canTime?{
+            queries:device.createQuerySet({type:'timestamp',count:2}),
+            resolved:device.createBuffer({size:16,usage:GPUBufferUsage.QUERY_RESOLVE|GPUBufferUsage.COPY_SRC}),
+            readback:device.createBuffer({size:16,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ}),
+            pending:false
+        }:null;
+        const packed=new Float32Array(52),mode=new Uint32Array(packed.buffer,36*4,4);
+        const screen=new Float32Array(52);
+        function makeTarget(old,width,height) {
+            if(old?.width===width&&old.height===height) return old;
+            old?.texture.destroy();
+            const texture=device.createTexture({size:[width,height],format:'rgba8unorm',
+                usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING});
+            return {width,height,texture,view:texture.createView(),uniform:old?.uniform??buffer(208,GPUBufferUsage.UNIFORM)};
+        }
+        function renderTarget(encoder,target,eye,focal,center,front,timestampWrites) {
+            target.eye=eye;
+            packed.set(eye.xrView.projectionMatrix,0);
+            packed.set(eye.pos,16);packed.set(eye.right,20);
+            packed.set(eye.down,24);packed.set(eye.f,28);
+            const lod=detailParameters();
+            packed.set([...focal,$('lod').checked?(frame.detailFade??0):0,model.n],32);
+            packed.set([frame.foveationRadius??0,frame.mipFadePercent??0,...eye.peripheral],40);
+            packed.set([lod.start,lod.end,lod.near,lod.far],44);
+            packed.set([...center,quality],48);
+            mode.set([src.width*src.height,src.degree,Number($('mip').checked),
+                Number($('sh').checked)|Number($('quant').checked)*2|Number($('color').value==='1')*4]);
+            device.queue.writeBuffer(target.uniform,0,packed);
+            const pipeline=pipelines[Number(front)];
             const bind=device.createBindGroup({layout:pipeline.getBindGroupLayout(0),
-                entries:[uniform,splats,coefficients,indices].map((buffer,binding)=>({binding,resource:{buffer}}))});
-            return {uniform,bind};
-        });
-        const packed=new Float32Array(40), mode=new Uint32Array(packed.buffer,36*4);
+                entries:[target.uniform,splats,coefficients,indices].map((buffer,binding)=>({binding,resource:{buffer}}))});
+            const pass=encoder.beginRenderPass({timestampWrites,colorAttachments:[{
+                view:target.view,loadOp:'clear',storeOp:'store',clearValue:[0,0,0,0]
+            }]});
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0,bind);
+            pass.draw(4,drawCount);
+            pass.end();
+        }
+        function composeEye(encoder,entry,eye,low,reuse,image,loadOp,timestampWrites) {
+            const previous=(reuse===1?low:entry.full)?.eye??eye;
+            for(const [i,v] of [eye,previous].entries()) {
+                const offset=i*16;
+                screen.set(v.pos,offset);screen.set(v.right,offset+4);
+                screen.set(v.down,offset+8);screen.set(v.f,offset+12);
+                screen.set([...v.tan,...v.shift],32+i*4);
+            }
+            const alpha=frame.alpha;
+            const clip=eye.far*eye.near/(eye.far-(frame.clipDepth??.99)*(eye.far-eye.near));
+            screen.set([...eye.peripheral,clip,alpha?.cutoff??0],40);
+            screen.set([alpha?.power??1,alpha?.threshold??1,alpha?.boost??1,alpha?.offset??0],44);
+            screen.set([reuse,Number(!!low),Number($('color').value==='2'),alpha?(alpha.unpremultiply?3:1):0],48);
+            device.queue.writeBuffer(entry.uniform,0,screen);
+            const bind=device.createBindGroup({layout:composite.getBindGroupLayout(0),entries:[
+                {binding:0,resource:{buffer:entry.uniform}},{binding:1,resource:sampler},
+                {binding:2,resource:entry.full.view},{binding:3,resource:(low??entry.full).view}
+            ]});
+            const {x,y,width,height}=image.viewport;
+            const pass=encoder.beginRenderPass({timestampWrites,colorAttachments:[{
+                view:image.colorTexture.createView(image.getViewDescriptor()),loadOp,storeOp:'store',clearValue:[0,0,0,1]
+            }]});
+            pass.setViewport(x,y,width,height,0,1);
+            pass.setPipeline(composite);
+            pass.setBindGroup(0,bind);
+            pass.draw(3);
+            pass.end();
+        }
         session.updateRenderState({layers:[layer]});
         return {
-            label:'Immersive WebGPU',
+            label:'Immersive WebGPU',canTime,
             destroy:()=>device.destroy(),
             draw(eyes,center) {
                 sortVisible(eyes,center,false);
@@ -168,30 +315,42 @@ async function createXRGPURenderer(session,src,scale) {
                 const encoder=device.createCommandEncoder();
                 const images=eyes.map(eye=>binding.getViewSubImage(layer,eye.xrView));
                 const left=images[0].viewport;
+                const focal=[left.width/(2*eyes[0].tan[0]),left.height/(2*eyes[0].tan[1])];
+                const {dual,reuse}=xrFramePlan();
+                const measure=timer&&!timer.pending&&$('adaptive').checked;
+                let first=!!measure;
+                const stamp=()=>{
+                    if(!first) return undefined;
+                    first=false;
+                    return {querySet:timer.queries,beginningOfPassWriteIndex:0};
+                };
                 for(const [i,eye] of eyes.entries()) {
-                    const image=images[i], viewport=image.viewport;
-                    packed.set(eye.xrView.projectionMatrix,0);
-                    packed.set(eye.pos,16);packed.set(eye.right,20);
-                    packed.set(eye.down,24);packed.set(eye.f,28);
-                    packed[32]=left.width/(2*eyes[0].tan[0]);
-                    packed[33]=left.height/(2*eyes[0].tan[1]);
-                    mode.set([src.width*src.height,src.degree,Number($('mip').checked),
-                        Number($('sh').checked)|Number($('quant').checked)*2|Number($('color').value==='1')*4]);
-                    device.queue.writeBuffer(views[i].uniform,0,packed);
-                    const descriptor=image.getViewDescriptor();
-                    const pass=encoder.beginRenderPass({colorAttachments:[{
-                        view:image.colorTexture.createView(descriptor),
-                        loadOp:i>0&&images[0].colorTexture===image.colorTexture&&
-                            images[0].getViewDescriptor().baseArrayLayer===descriptor.baseArrayLayer?'load':'clear',
-                        storeOp:'store',clearValue:{r:0,g:0,b:0,a:1}
-                    }]});
-                    pass.setViewport(viewport.x,viewport.y,viewport.width,viewport.height,0,1);
-                    pass.setPipeline(pipeline);
-                    pass.setBindGroup(0,views[i].bind);
-                    pass.draw(4,drawCount);
-                    pass.end();
+                    const image=images[i],{width,height}=image.viewport;
+                    const entry=cache[i] ||= {uniform:buffer(208,GPUBufferUsage.UNIFORM)};
+                    const front=!!frame.frontToBack;
+                    entry.full=makeTarget(entry.full,width,height);
+                    if(reuse!==2||!entry.full.eye) renderTarget(encoder,entry.full,eye,focal,center,front,stamp());
+                    if(dual) {
+                        entry.low=makeTarget(entry.low,Math.max(1,width>>1),Math.max(1,height>>1));
+                        if(reuse!==1||!entry.low.eye)
+                            renderTarget(encoder,entry.low,eye,[focal[0]*.5,focal[1]*.5],center,front,stamp());
+                    }
+                    const shared=i>0&&images[0].colorTexture===image.colorTexture&&
+                        images[0].getViewDescriptor().baseArrayLayer===image.getViewDescriptor().baseArrayLayer;
+                    const end=measure&&i===eyes.length-1?{querySet:timer.queries,endOfPassWriteIndex:1}:undefined;
+                    composeEye(encoder,entry,eye,dual?entry.low:null,reuse,image,shared?'load':'clear',end);
+                }
+                if(measure) {
+                    encoder.resolveQuerySet(timer.queries,0,2,timer.resolved,0);
+                    encoder.copyBufferToBuffer(timer.resolved,0,timer.readback,0,16);
+                    timer.pending=true;
                 }
                 device.queue.submit([encoder.finish()]);
+                if(measure) timer.readback.mapAsync(GPUMapMode.READ).then(()=>{
+                    const [start,end]=new BigUint64Array(timer.readback.getMappedRange());
+                    timer.readback.unmap();
+                    if(immersiveRunning&&end>start) updateQuality(Number(end-start)/1e6);
+                }).catch(()=>{}).finally(()=>{timer.pending=false;});
             }
         };
     } catch(error) {

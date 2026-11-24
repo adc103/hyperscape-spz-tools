@@ -46,8 +46,8 @@ function initialize() {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribDivisor(0,1);
     resources={splat,screen,vao,indices,screenVao};
-    $('adaptive').disabled=!gpuTimer;
-    if(!gpuTimer) $('adaptive').parentNode.title='This browser does not expose GPU timer queries.';
+    const xrCanTime=$('enterVr')&&typeof XRGPUBinding==='function';
+    $('adaptive').disabled=!gpuTimer&&!xrCanTime;
 }
 function upload(scan) {
     const {width,height,terms}=scan;
@@ -239,6 +239,33 @@ function compose(full,low,eye,x,width,reprojection,target=null,y=0,height=canvas
     gl.uniform1f(u.clipDepth,eye.far*eye.near/(eye.far-(frame.clipDepth??.99)*(eye.far-eye.near)));
     gl.drawArrays(gl.TRIANGLES,0,3);
 }
+function updateQuality(ms) {
+    if(!$('adaptive').checked||ms<=0) return;
+    const change=Math.max(-.1,Math.min(.1,.2*((frame.gpuBudgetMs??13.8)/ms-1)));
+    quality=Math.max(.1,Math.min(1,quality*(1+change)));
+}
+function beginGlTiming() {
+    if(activeQuery&&gl.getQueryParameter(activeQuery,gl.QUERY_RESULT_AVAILABLE)) {
+        if(!gl.getParameter(gpuTimer.GPU_DISJOINT_EXT)) {
+            lastMs=gl.getQueryParameter(activeQuery,gl.QUERY_RESULT)/1e6;
+            updateQuality(lastMs);
+        }
+        gl.deleteQuery(activeQuery);
+        activeQuery=null;
+    }
+    let measuring=false;
+    if(gpuTimer&&!activeQuery&&$('adaptive').checked) {
+        activeQuery=gl.createQuery();
+        gl.beginQuery(gpuTimer.TIME_ELAPSED_EXT,activeQuery);
+        measuring=true;
+    }
+    return measuring;
+}
+function xrFramePlan() {
+    const dual=$('foveation').checked;
+    const reuse=dual&&tick++%4!==0?Number($('reuse').value):0;
+    return {dual,reuse};
+}
 function renderFrame() {
     const view=canvas.getBoundingClientRect();
     const ratio=Math.min(window.devicePixelRatio||1,2);
@@ -263,23 +290,7 @@ function renderFrame() {
     ++tick;
     const center=eyes[0].pos.map((v,i)=>(v+eyes.at(-1).pos[i])*.5);
     sortVisible(eyes,center);
-    if(activeQuery&&gl.getQueryParameter(activeQuery,gl.QUERY_RESULT_AVAILABLE)) {
-        if(!gl.getParameter(gpuTimer.GPU_DISJOINT_EXT)) {
-            lastMs=gl.getQueryParameter(activeQuery,gl.QUERY_RESULT)/1e6;
-            if($('adaptive').checked&&lastMs>0) {
-                const change=Math.max(-.1,Math.min(.1,.2*((frame.gpuBudgetMs??13.8)/lastMs-1)));
-                quality=Math.max(.1,Math.min(1,quality*(1+change)));
-            }
-        }
-        gl.deleteQuery(activeQuery);
-        activeQuery=null;
-    }
-    let measuring=false;
-    if(gpuTimer&&!activeQuery&&$('adaptive').checked) {
-        activeQuery=gl.createQuery();
-        gl.beginQuery(gpuTimer.TIME_ELAPSED_EXT,activeQuery);
-        measuring=true;
-    }
+    const measuring=beginGlTiming();
     const focal=[w/(2*eyes[0].tan[0]),h/(2*eyes[0].tan[1])];
     for(let i=0;i<eyes.length;i++) {
         const cache=eyesHistory[i] ||= {};

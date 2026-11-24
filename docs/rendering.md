@@ -11,7 +11,7 @@ The saved-scan path runs through the following managed methods in `HHC.dll`.
 3. `HyperscapeViewer` writes visibility cluster files keyed by the model name, creates a preloaded renderer, and passes the byte buffer, format, and kernel into `SplatModel`.
 4. `SplatRenderer.SetModel` leads to `ConstellusRenderer.RegisterModel`. The native loader in `libConstellusUnityPlugin.so` decodes the SPZ, prepares GPU buffers, and keeps the selected kernel for the rendering pass.
 
-The APK handles a glTF scene mesh separately through `MeshManager.LoadGltfFile`. The importer disables the mesh's renderer. The mesh builder sets up collision and navigation, with visible rendering controlled by `_showMeshForDebug` through a shader-warmup coroutine. The serialized production splat feature disables camera-depth testing.
+Hyperscape handles a glTF scene mesh separately through `MeshManager.LoadGltfFile`. The importer disables the mesh's renderer. The mesh builder sets up collision and navigation, with visible rendering controlled by `_showMeshForDebug` through a shader-warmup coroutine. The serialized production splat feature disables camera-depth testing.
 
 ## 2. SPZ format and decoding
 
@@ -38,7 +38,7 @@ Offsets below start after the header. Let `T = (D + 1)² − 1`.
 | `16N` | `3N` | Axis-angle rotation-vector bytes, selected by flag `0x04`. Decode each component as `byte × (2π / 255) − π`. Convert the vector to a unit quaternion with a small-angle guard. Native order is XYZW. 3DGS PLY uses WXYZ. |
 | `19N` | `3NT` | Higher-order SH coefficients, selected by flag `0x08`. Three contiguous Y, U, V byte planes, each containing `N × T` values. Decode them using the equations below. |
 
-For each higher-order coefficient, first normalize each input byte with `(byte − 128) / 128`. Then apply the APK's float32 color constants.
+For each higher-order coefficient, first normalize each input byte with `(byte − 128) / 128`. Then apply the float32 color constants below.
 
 ```text
 R = Y + 1.5748 × V
@@ -121,9 +121,9 @@ The opaque-scene shader samples color and depth with scaled UVs. If alpha correc
 
 The Unity render graph requests `R8G8B8A8_UNorm` for the color intermediate and explicitly sets the descriptor's `sRGB` flag to false. `BlitToTarget` binds the camera color target and can bind depth alongside it. It uses Unity's texture blitter, with an alternate overload for a supplied material. The intermediate format describes storage at that stage. The final camera target, headset compositor, and screenshot capture determine later color transfer.
 
-## 6. APK locations
+## 6. Code locations
 
-Addresses below are virtual addresses in this APK build. Shader paths are relative to `Constellus/spv`.
+Addresses below are virtual addresses in this build. Shader paths are relative to `Constellus/spv`.
 
 | Evidence | Location |
 |---|---|

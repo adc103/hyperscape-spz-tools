@@ -5,10 +5,13 @@
 | SPZ v2, RayQuadratic, Mip-Splatting, SH | Yes | Yes |
 | Distance-based detail, 16-bit and 32-bit sorting | Yes | Yes |
 | Stereo | Simulated or calibrated | Headset pose and per-eye projection |
-| Two-resolution composition, frame reuse, GPU timer tuning | Optional | No |
-| Color conversion | Per splat or composite | Per splat. WebGL also supports composite conversion. |
+| Two-resolution composition and frame reuse | Optional | Optional |
+| Adaptive GPU budget | Requires GPU timer queries | Requires GPU timestamp support |
+| Color conversion | Per splat or composite | Per splat or composite |
 
 The Quest viewer prefers WebGPU when the browser exposes the WebXR binding. Otherwise it uses immersive WebGL. If WebGPU setup fails, select **Enter VR** again to use WebGL. The status line shows the active backend.
+
+In VR, the headset supplies eye poses, projections, and render size. Frame JSON camera calibration and depth images apply to the preview.
 
 Physical-headset testing is pending.
 
