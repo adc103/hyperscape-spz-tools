@@ -19,7 +19,7 @@ Performance, Balanced, and High use 50%, 65%, and 85% render scale. They share t
 
 The rendering reference also covers native visibility masks, navigation meshes, and compositor behavior. The SPZ-only viewer uses browser frustum culling and the WebXR compositor. It has no visibility-mask loader or navigation mesh.
 
-Push the left stick forward to show the teleport arc. Release when the landing ring is visible. A red arc marks an invalid landing. A valid teleport needs a clear arc and a landing with room to stand, reached by a straight route across scanned floor. Flick the right stick to turn 30°. Press Menu or Y on the left controller to exit. Menu requires browser support.
+Push the left stick forward to show the teleport arc. Release when the landing ring is visible. A red arc marks an invalid landing. A valid teleport needs a clear arc and a landing with 18 cm of clearance from obstacles, reached by a straight route across scanned floor. Flick the right stick to turn 30°. Press Menu or Y on the left controller to exit. Menu requires browser support.
 
 VR aligns the estimated scan floor with Quest's tracked floor. The viewer uses one floor level and may move the starting point to nearby clear floor. It derives walkable areas from the SPZ and fills a missing 20 cm cell when all eight neighboring cells contain clear, measured floor. Larger gaps and sparse scans can limit teleporting.
 

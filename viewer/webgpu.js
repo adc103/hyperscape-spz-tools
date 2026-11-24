@@ -198,13 +198,11 @@ fn previousUV(uv: vec2f) -> vec2f {
         let ndc=vec2f(v.uv.x*2.0-1.0,1.0-v.uv.y*2.0);
         let p=(ndc-settings.lens.zw)*settings.lens.xy;
         let ray=settings.right.xyz*p.x-settings.down.xyz*p.y+settings.forward.xyz;
-        if ray.z<-.001 {
-            let depth=(settings.marker.z-settings.eye.z)/ray.z;
-            let radius=length(settings.eye.xy+depth*ray.xy-settings.marker.xy);
-            if depth>0.0 && radius>.16 && radius<.23 {
-                rgb=mix(rgb,vec3f(.92,.81,.44),.95);
-            }
-        }
+        let depth=(settings.marker.z-settings.eye.z)/min(ray.z,-.001);
+        let radius=length(settings.eye.xy+depth*ray.xy-settings.marker.xy);
+        let aa=max(fwidth(radius)*.5,.0001);
+        let ring=smoothstep(.16-aa,.16+aa,radius)-smoothstep(.23-aa,.23+aa,radius);
+        if ray.z<-.001 && depth>0.0 { rgb=mix(rgb,vec3f(.92,.81,.44),.95*ring); }
     }
     return vec4f(rgb,1);
 }
@@ -262,16 +260,23 @@ async function createXRGPURenderer(session,src,scale) {
             struct Vertex {
                 @builtin(position) position: vec4f,
                 @location(0) color: vec3f,
+                @location(1) edge: f32,
             }
-            @vertex fn vertex(@location(0) position: vec2f,@location(1) color: vec3f) -> Vertex {
-                return Vertex(vec4f(position,0,1),color);
+            @vertex fn vertex(@location(0) position: vec2f,@location(1) color: vec3f,@location(2) edge: f32) -> Vertex {
+                return Vertex(vec4f(position,0,1),color,edge);
             }
-            @fragment fn fragment(v: Vertex) -> @location(0) vec4f { return vec4f(v.color,1); }
+            @fragment fn fragment(v: Vertex) -> @location(0) vec4f {
+                let aa=max(fwidth(v.edge)*.5,.001);
+                let coverage=1-smoothstep(.64-aa,.64+aa,abs(v.edge));
+                return vec4f(v.color*coverage,coverage);
+            }
         `});
+        const ribbonBlend={srcFactor:'one',dstFactor:'one-minus-src-alpha'};
         const ribbon=await device.createRenderPipelineAsync({
-            layout:'auto',vertex:{module:ribbonShader,entryPoint:'vertex',buffers:[{arrayStride:20,attributes:[
-                {shaderLocation:0,offset:0,format:'float32x2'},{shaderLocation:1,offset:8,format:'float32x3'}
-            ]}]},fragment:{module:ribbonShader,entryPoint:'fragment',targets:[{format}]}
+            layout:'auto',vertex:{module:ribbonShader,entryPoint:'vertex',buffers:[{arrayStride:24,attributes:[
+                {shaderLocation:0,offset:0,format:'float32x2'},{shaderLocation:1,offset:8,format:'float32x3'},
+                {shaderLocation:2,offset:20,format:'float32'}
+            ]}]},fragment:{module:ribbonShader,entryPoint:'fragment',targets:[{format,blend:{color:ribbonBlend,alpha:ribbonBlend}}]}
         });
         const ribbonVertices=new Float32Array(teleportRibbonFloats);
         const sampler=device.createSampler({magFilter:'linear',minFilter:'linear'});
@@ -373,7 +378,7 @@ async function createXRGPURenderer(session,src,scale) {
             const count=writeTeleportRibbon(eye,viewport,aim,ribbonVertices);
             if(!count) return;
             const vertices=entry.ribbon ||= buffer(ribbonVertices.byteLength,GPUBufferUsage.VERTEX);
-            device.queue.writeBuffer(vertices,0,ribbonVertices,0,count*5);
+            device.queue.writeBuffer(vertices,0,ribbonVertices,0,count*teleportRibbonStride);
             const {x,y,width,height}=viewport;
             const pass=encoder.beginRenderPass({colorAttachments:[{...attachment,loadOp:'load'}]});
             pass.setViewport(x,y,width,height,0,1);

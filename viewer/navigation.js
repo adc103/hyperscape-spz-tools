@@ -5,7 +5,7 @@ const navMaxRadius=80;
 const navStride=1024;
 const navOffset=navStride/2;
 const obstaclePadding=.025;
-const landingRadius=.4;
+const landingRadius=.18;
 
 function navigationKey(x,y) {
     const col=Math.floor(x/navCellSize)+navOffset;

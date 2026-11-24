@@ -45,7 +45,7 @@ function xrEye(xrView, origin, basis) {
 }
 
 function createXRSort(session,origin,onNavigation,onError) {
-    const worker=new Worker('sort-worker.js?v=5');
+    const worker=new Worker('sort-worker.js?v=6');
     const points=model.points.slice(0,model.n*4);
     worker.postMessage({points,origin},[points.buffer]);
     let buffer=new ArrayBuffer(model.n*4), spare=new ArrayBuffer(model.n*4), latest, last, pending=false, failure;
@@ -92,7 +92,8 @@ function xrNeedsComposite(dual,marker) {
     return dual||!!marker||!!frame.alpha||!!frame.frontToBack||$('color').value==='2';
 }
 
-const teleportRibbonFloats=29*6*5;
+const teleportRibbonStride=6;
+const teleportRibbonFloats=29*6*teleportRibbonStride;
 
 function writeTeleportRibbon(eye,{width,height},aim,vertices) {
     const color=aim.target?[.92,.81,.44]:[1,.16,.08];
@@ -116,9 +117,9 @@ function writeTeleportRibbon(eye,{width,height},aim,vertices) {
             const dx=(b[0]-a[0])*width,dy=(b[1]-a[1])*height;
             const length=Math.hypot(dx,dy);
             if(length>.01) {
-                const wx=-dy/length*4/width,wy=dx/length*4/height;
+                const wx=-dy/length*6/width,wy=dx/length*6/height;
                 const corners=[[a[0]+wx,a[1]+wy],[a[0]-wx,a[1]-wy],[b[0]+wx,b[1]+wy],[b[0]-wx,b[1]-wy]];
-                for(const j of [0,1,2,2,1,3]) vertices.set([...corners[j],...color],count++*5);
+                for(const j of [0,1,2,2,1,3]) vertices.set([...corners[j],...color,j%2?-1:1],count++*teleportRibbonStride);
             }
         }
         start=end;
@@ -130,33 +131,43 @@ function createGlTeleportRibbon() {
     const ribbon=program(`#version 300 es
         layout(location=0) in vec2 position;
         layout(location=1) in vec3 color;
+        layout(location=2) in float edge;
         out mediump vec3 tint;
-        void main() { tint=color; gl_Position=vec4(position,0.0,1.0); }`,
+        out mediump float strokeEdge;
+        void main() { tint=color; strokeEdge=edge; gl_Position=vec4(position,0.0,1.0); }`,
     `#version 300 es
         precision mediump float;
         in vec3 tint;
+        in float strokeEdge;
         out vec4 result;
-        void main() { result=vec4(tint,1.0); }`);
+        void main() {
+            float aa=max(fwidth(strokeEdge)*.5,.001);
+            float coverage=1.0-smoothstep(.64-aa,.64+aa,abs(strokeEdge));
+            result=vec4(tint*coverage,coverage);
+        }`);
     const vertices=new Float32Array(teleportRibbonFloats);
     const vao=gl.createVertexArray(),buffer=gl.createBuffer();
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
     gl.bufferData(gl.ARRAY_BUFFER,vertices.byteLength,gl.DYNAMIC_DRAW);
     gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0,2,gl.FLOAT,false,20,0);
+    gl.vertexAttribPointer(0,2,gl.FLOAT,false,24,0);
     gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1,3,gl.FLOAT,false,20,8);
+    gl.vertexAttribPointer(1,3,gl.FLOAT,false,24,8);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2,1,gl.FLOAT,false,24,20);
     return {
         draw(eye,viewport,aim) {
             if(!aim?.arc.length) return;
             const count=writeTeleportRibbon(eye,viewport,aim,vertices);
             if(!count) return;
             gl.viewport(viewport.x,viewport.y,viewport.width,viewport.height);
-            gl.disable(gl.BLEND);
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
             gl.useProgram(ribbon.handle);
             gl.bindVertexArray(vao);
             gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
-            gl.bufferSubData(gl.ARRAY_BUFFER,0,vertices,0,count*5);
+            gl.bufferSubData(gl.ARRAY_BUFFER,0,vertices,0,count*teleportRibbonStride);
             gl.drawArrays(gl.TRIANGLES,0,count);
         },
         destroy() {

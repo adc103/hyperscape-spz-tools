@@ -164,12 +164,11 @@ void main() {
     if(teleportMarker.w>0.0) {
         vec2 p=(uv*2.0-1.0-shift)*tangent;
         vec3 ray=transpose(camera)*vec3(p.x,-p.y,1.0);
-        if(ray.z<-.001) {
-            float depth=(teleportMarker.z-eye.z)/ray.z;
-            float radius=length(eye.xy+depth*ray.xy-teleportMarker.xy);
-            if(depth>0.0 && radius>.16 && radius<.23)
-                rgb=mix(rgb,vec3(.92,.81,.44),.95);
-        }
+        float depth=(teleportMarker.z-eye.z)/min(ray.z,-.001);
+        float radius=length(eye.xy+depth*ray.xy-teleportMarker.xy);
+        float aa=max(fwidth(radius)*.5,.0001);
+        float ring=smoothstep(.16-aa,.16+aa,radius)-smoothstep(.23-aa,.23+aa,radius);
+        if(ray.z<-.001 && depth>0.0) rgb=mix(rgb,vec3(.92,.81,.44),.95*ring);
     }
     result=vec4(rgb,1);
 }`;

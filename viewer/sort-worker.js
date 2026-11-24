@@ -1,6 +1,6 @@
 'use strict';
 
-importScripts('navigation.js?v=5');
+importScripts('navigation.js?v=6');
 
 let points, ids, scratch, keys;
 const bins=new Uint32Array(256);
