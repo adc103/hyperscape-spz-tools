@@ -6,6 +6,8 @@ const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
 const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
 let resources, model, gpuModel, eyesHistory=[], sortData;
 let drawCount=0, quality=1, lastMs=0, tick=0, activeQuery=null;
+let vrMode=false, sortScratch;
+const sortBuckets=new Uint32Array(65536);
 
 function program(vertex,fragment) {
     const handle=gl.createProgram();
@@ -73,6 +75,7 @@ function upload(scan) {
     delete scan.rotations;
     delete scan.scales;
     sortData={ids:new Uint32Array(scan.n), keys:new Float32Array(scan.n)};
+    sortScratch=new Uint32Array(scan.n);
 }
 function cameraEyes(width,height) {
     if(frame.eyes) return frame.eyes.map(e=>{
@@ -116,8 +119,8 @@ function checkView(eye,x,y,z) {
 function sortVisible(eyes,center,uploadToGl=true) {
     const {points,n}=model, {ids,keys}=sortData;
     const first=eyes[0], second=eyes[1] || first;
-    const detail=$('lod').checked, config=detailParameters();
-    const narrow=$('sort').value==='16';
+    const detail=$('lod').checked||vrMode, config=detailParameters();
+    const narrow=$('sort').value==='16'||vrMode;
     const [ex,ey,ez]=first.pos,[sx,sy,sz]=second.pos;
     const [mx,my,mz]=center;
     const cap=frame.maxSplats??n;
@@ -144,10 +147,24 @@ function sortVisible(eyes,center,uploadToGl=true) {
     }
     const visible=ids.subarray(0,count);
     const order=frame.frontToBack?-1:1;
-    visible.sort((a,b)=>order*(keys[a]-keys[b]));
+    let sorted;
+    if(narrow) {
+        // counting sort on the 16-bit integer keys: O(n), no per-compare callback
+        sortBuckets.fill(0);
+        for(let k=0;k<count;++k) sortBuckets[keys[visible[k]]]++;
+        let sum=0;
+        if(order>0) for(let b=0;b<65536;++b){const c=sortBuckets[b];sortBuckets[b]=sum;sum+=c;}
+        else for(let b=65535;b>=0;--b){const c=sortBuckets[b];sortBuckets[b]=sum;sum+=c;}
+        for(let k=0;k<count;++k){const id=visible[k];sortScratch[sortBuckets[keys[id]]++]=id;}
+        ids.set(sortScratch.subarray(0,count));
+        sorted=ids.subarray(0,count);
+    } else {
+        visible.sort((a,b)=>order*(keys[a]-keys[b]));
+        sorted=visible;
+    }
     if(uploadToGl) {
         gl.bindBuffer(gl.ARRAY_BUFFER,resources.indices);
-        gl.bufferData(gl.ARRAY_BUFFER,visible,gl.DYNAMIC_DRAW);
+        gl.bufferData(gl.ARRAY_BUFFER,sorted,gl.DYNAMIC_DRAW);
     }
     drawCount=count;
 }

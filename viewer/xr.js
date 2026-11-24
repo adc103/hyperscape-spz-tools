@@ -59,6 +59,23 @@ async function createXRGlRenderer(session,scale) {
             }
         },
         draw(eyes,center) {
+            if(activeQuery&&gl.getQueryParameter(activeQuery,gl.QUERY_RESULT_AVAILABLE)) {
+                if(!gl.getParameter(gpuTimer.GPU_DISJOINT_EXT)) {
+                    lastMs=gl.getQueryParameter(activeQuery,gl.QUERY_RESULT)/1e6;
+                    if(lastMs>0) {
+                        const change=Math.max(-.1,Math.min(.1,.2*((frame.gpuBudgetMs??11)/lastMs-1)));
+                        quality=Math.max(.15,Math.min(1,quality*(1+change)));
+                    }
+                }
+                gl.deleteQuery(activeQuery);
+                activeQuery=null;
+            }
+            let measuring=false;
+            if(gpuTimer&&!activeQuery) {
+                activeQuery=gl.createQuery();
+                gl.beginQuery(gpuTimer.TIME_ELAPSED_EXT,activeQuery);
+                measuring=true;
+            }
             sortVisible(eyes,center);
             const viewports=eyes.map(eye=>layer.getViewport(eye.xrView));
             const focal=[viewports[0].width/(2*eyes[0].tan[0]),viewports[0].height/(2*eyes[0].tan[1])];
@@ -71,6 +88,7 @@ async function createXRGlRenderer(session,scale) {
                 drawLayer(layers[i],eye,focal,center);
                 compose(layers[i],null,eye,x,width,0,layer.framebuffer,y,height);
             }
+            if(measuring) gl.endQuery(gpuTimer.TIME_ELAPSED_EXT);
         }
     };
 }
@@ -93,10 +111,14 @@ enter.onclick=async()=>{
             optionalFeatures:wantsGpu?['webgpu']:[]
         });
         immersiveRunning=true;
+        vrMode=true;
+        quality=Math.min(quality,.6);
         const gpuMode=session.enabledFeatures?.includes('webgpu');
         session.addEventListener('end',()=>{
             renderer?.destroy();
             immersiveRunning=false;
+            vrMode=false;
+            quality=1;
             starting=false;
             xrAvailable();
             requestRender();
@@ -145,6 +167,8 @@ enter.onclick=async()=>{
         xrStatus.textContent=error.message;
         if(session) await session.end().catch(()=>{});
         immersiveRunning=false;
+        vrMode=false;
+        quality=1;
         starting=false;
         xrAvailable();
     }
