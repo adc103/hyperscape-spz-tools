@@ -121,7 +121,13 @@ The opaque-scene shader samples color and depth with scaled UVs. If alpha correc
 
 The Unity render graph requests `R8G8B8A8_UNorm` for the color intermediate and explicitly sets the descriptor's `sRGB` flag to false. `BlitToTarget` binds the camera color target and can bind depth alongside it. It uses Unity's texture blitter, with an alternate overload for a supplied material. The intermediate format describes storage at that stage. The final camera target, headset compositor, and screenshot capture determine later color transfer.
 
-## 6. Code locations
+## 6. Quest teleport and floor
+
+Hyperscape builds a Unity navigation mesh from the scene geometry and injects its surface into the teleport interactable. The agent radius is 0.4 m, the height is 2 m, and the climb limit is 0.04 m. The controller pointer supplies the arc origin. The packaged gravity arc samples 30 points over one second, multiplies gravity by 2.3, and maps horizontal head-to-pointer distance and controller pitch through serialized curves. Candidate selection checks blockers between the head and the arc origin, then tests the arc segments for a surface hit. The spawn controller tracks floor height separately from eye height.
+
+The browser uses the same arc curves and blocks invalid hits. The SPZ supplies the points for an inferred single-level floor and obstacle map. Quest's floor-relative tracking supplies standing and crouching height. The browser shows a landing ring and uses its inferred map in place of the native mesh.
+
+## 7. Code locations
 
 Addresses below are virtual addresses in this build. Shader paths are relative to `Constellus/spv`.
 
@@ -129,6 +135,9 @@ Addresses below are virtual addresses in this build. Shader paths are relative t
 |---|---|
 | Saved-scan format and kernel selection | `HHC.dll` / `CaptureViewerManager.FinalizeSplatLoad`, call at `0x5a2dc18` in `libil2cpp.so`. |
 | Separate mesh rendering and navigation | `<LoadGltfFile>d__20.MoveNext` disables the renderer at `0x5a34acc`. `<MeshBuilderCoroutine>d__26.MoveNext` at `0x5a34d9c` handles collision, navigation, and the visibility flag passed to the shader-warmup coroutine. |
+| Teleport surface and agent settings | `CaptureViewerManager.BuildNavMesh` at `0x5a2e2a0`, `SetupTeleportInteractable` at `0x5a2e85c`, and `SceneNavigation.CreateNavMeshBuildSettings` at `0x5a562d8`. |
+| Quest controller teleport | `TeleportArcGravity.PointAtIndex` at `0x5fc6f5c`, `CalculateSpeed` at `0x5fc71e0`, `RemapPitch` at `0x5fc74d0`, and `TeleportCandidateComputer.ComputeCandidate` at `0x5fc7d5c`. Both controller arc components in `level0` carry the same parameters. |
+| Floor and spawn | `PlayerSpawnController.PositionAtSpawn` at `0x59d10e4` and `FinalizeTeleport` at `0x59d0f94`. |
 | SPZ header flags and attribute unpacking | `libConstellusUnityPlugin.so`, `hyperscape::spz::loadSpz` at `0x2d61bc` and `unpackGaussians` at `0x2d3a90`. |
 | Native buffer loader and SH repacking | `loadSpzGaussianSplattingDataFromBuffer` at `0x2cf8d8`, model conversion at `0x2ce364`, and 8-bit SH packing at `0x2d0984`. |
 | Production renderer feature | `globalgamemanagers.assets`, serialized object 5083. Optional per-model settings appear in `sharedassets0.assets`, SplatRenderer object 2598. |

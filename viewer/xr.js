@@ -44,8 +44,8 @@ function xrEye(xrView, origin, basis) {
     };
 }
 
-function createXRSort(session,origin,onNavigation) {
-    const worker=new Worker('sort-worker.js');
+function createXRSort(session,origin,onNavigation,onError) {
+    const worker=new Worker('sort-worker.js?v=2');
     const points=model.points.slice(0,model.n*4);
     worker.postMessage({points,origin},[points.buffer]);
     let buffer=new ArrayBuffer(model.n*4), spare=new ArrayBuffer(model.n*4), latest, last, pending=false, failure;
@@ -54,7 +54,10 @@ function createXRSort(session,origin,onNavigation) {
         pending=false;
         latest=new Uint32Array(data.buffer,0,data.count);
     };
-    worker.onerror=event=>{failure=Error(event.message||'The VR sorting worker stopped.');};
+    worker.onerror=event=>{
+        failure=Error(event.message||'The VR sorting worker stopped.');
+        onError(failure);
+    };
     session.addEventListener('end',()=>worker.terminate(),{once:true});
     return (eyes,center,time)=>{
         if(failure) throw failure;
@@ -147,29 +150,14 @@ function joystick(input) {
     return axes?.length>=2?[axes[axes.length-2],axes[axes.length-1]]:[0,0];
 }
 
-function teleportTarget(frame,space,input,head,basis,origin,floor) {
-    const aim=input?.targetRaySpace&&frame.getPose(input.targetRaySpace,space)?.transform.matrix;
-    const m=aim??head.transform.matrix;
+function teleportTarget(frame,space,input,basis,origin,head,nav) {
+    if(!nav||nav.floor===null||!input.targetRaySpace) return null;
+    const m=frame.getPose(input.targetRaySpace,space)?.transform.matrix;
+    if(!m) return null;
+    const hand=toWorld(m[12],m[13],m[14],basis).map((value,i)=>value+origin[i]);
     const direction=toWorld(-m[8],-m[9],-m[10],basis);
-    const horizontal=Math.hypot(direction[0],direction[1]);
-    if(horizontal<.12||direction[2]>.45) return null;
-    const hand=toWorld(m[12],m[13],m[14],basis);
-    const slope=-direction[2];
-    const t=Math.max(0,Math.min(1,(slope-.12)/.20));
-    const rayDistance=Math.max(.35,Math.min(5,(origin[2]+hand[2]-floor)*horizontal/Math.max(.12,slope)));
-    const distance=2.5+(rayDistance-2.5)*t*t*(3-2*t);
-    return [origin[0]+hand[0]+direction[0]/horizontal*distance,
-        origin[1]+hand[1]+direction[1]/horizontal*distance,floor];
-}
-
-function steadyTeleportTarget(nav,from,previous,next,elapsed) {
-    if(!previous||!next) return next;
-    const dx=next[0]-previous[0],dy=next[1]-previous[1];
-    if(!validTeleport(nav,from,previous)) return next;
-    if(Math.hypot(dx,dy)<.025) return previous;
-    const blend=1-Math.exp(-elapsed/52);
-    const point=[previous[0]+dx*blend,previous[1]+dy*blend,next[2]];
-    return validTeleport(nav,from,point)?point:next;
+    const stabilizer=[head[0],head[1],head[2]-.25];
+    return teleportArcLanding(nav,head,controllerTeleportArc(hand,direction,stabilizer));
 }
 
 function exitPressed(input) {
@@ -186,7 +174,7 @@ function exitPressed(input) {
 function createLocomotion(origin,startYaw,getNavigation) {
     let yaw=startYaw, turnHeld=false, aimHeld=false, target=null;
 
-    return (frame,space,head,inputs,elapsed=16)=>{
+    return (frame,space,head,inputs)=>{
         let changed=false;
         const left=[...inputs].find(input=>input.handedness==='left');
         const right=[...inputs].find(input=>input.handedness==='right');
@@ -208,13 +196,12 @@ function createLocomotion(origin,startYaw,getNavigation) {
         const from=offset.map((value,i)=>origin[i]+value);
         if(left&&forward<-.65) aimHeld=true;
         if(aimHeld&&left&&forward<-.25) {
-            const candidate=nav&&teleportTarget(frame,space,left,head,basis,origin,nav.floor);
-            const next=candidate?limitTeleport(nav,from,candidate):null;
-            target=steadyTeleportTarget(nav,from,changed?null:target,next,elapsed);
+            target=teleportTarget(frame,space,left,basis,origin,from,nav);
         } else if(aimHeld) {
-            if(left&&Math.abs(forward)<.25&&target&&validTeleport(nav,from,target)) {
+            if(left&&!changed&&Math.abs(forward)<.25&&target&&validTeleport(nav,from,target)) {
                 origin[0]=target[0]-offset[0];
                 origin[1]=target[1]-offset[1];
+                origin[2]=target[2];
                 changed=true;
             }
             aimHeld=false;
@@ -232,6 +219,7 @@ enter.onclick=async()=>{
     try {
         const wantsGpu=canGpu&&xrSource&&!webgpuFailed;
         session=await navigator.xr.requestSession('immersive-vr',{
+            requiredFeatures:['local-floor'],
             optionalFeatures:wantsGpu?['webgpu']:[]
         });
         immersiveRunning=true;
@@ -249,9 +237,10 @@ enter.onclick=async()=>{
             requestRender();
         },{once:true});
         const scale=Number($('xrScale').value);
-        const origin=[...pose.eye];
-        let navigation;
-        const sorted=createXRSort(session,[...origin],nav=>{navigation=nav;});
+        const origin=[...pose.eye], startYaw=pose.yaw;
+        const scanStart=[origin[0],origin[1],model.pivot[2]];
+        let navigation,navigationError;
+        const sorted=createXRSort(session,scanStart,nav=>{navigation=nav;},error=>{navigationError=error;});
         const previewQuality=quality;
         drawCount=0;
         quality=1;
@@ -266,8 +255,9 @@ enter.onclick=async()=>{
             throw error;
         }
         session.updateRenderState({depthNear:.10,depthFar:1500});
-        const space=await session.requestReferenceSpace('local');
-        const move=createLocomotion(origin,pose.yaw,()=>navigation);
+        const space=await session.requestReferenceSpace('local-floor');
+        let anchored=false;
+        const move=createLocomotion(origin,startYaw,()=>navigation);
         let previousTime;
         tick=0;
         const gpuTiming=renderer.canTime??!!gpuTimer;
@@ -286,13 +276,30 @@ enter.onclick=async()=>{
             session.requestAnimationFrame(animate);
             const head=frame.getViewerPose(space);
             if(!head?.views.length) return;
+            if(navigationError) {
+                failed=true;
+                xrStatus.textContent=navigationError.message;
+                session.end().catch(()=>{});
+                return;
+            }
+            if(!navigation) return;
+            if(!anchored) {
+                const {x,z}=head.transform.position;
+                const offset=toWorld(x,0,z,worldBasis(startYaw));
+                const [spawnX,spawnY]=navigationSpawn(navigation);
+                origin[0]=spawnX-offset[0];
+                origin[1]=spawnY-offset[1];
+                origin[2]=navigation.floor??(scanStart[2]-1.6);
+                if(navigation.floor===null) xrStatus.textContent='Scan floor not found. Teleport is unavailable.';
+                anchored=true;
+            }
             const elapsed=time-(previousTime??time);
             if(elapsed>0&&elapsed<250) {
                 totalTime+=elapsed;
                 frames++;
             }
             previousTime=time;
-            const {basis,target,changed}=move(frame,space,head,session.inputSources,Math.min(100,elapsed||16));
+            const {basis,target,changed}=move(frame,space,head,session.inputSources);
             if(changed) tick=0;
             const eyes=[...head.views].map(view=>xrEye(view,origin,basis));
             const center=eyes[0].pos.map((v,i)=>(v+eyes.at(-1).pos[i])*.5);

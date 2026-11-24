@@ -19,7 +19,9 @@ Performance, Balanced, and High use 50%, 65%, and 85% render scale. They share t
 
 The rendering reference also covers native visibility masks, navigation meshes, and compositor behavior. The SPZ-only viewer uses browser frustum culling and the WebXR compositor. It has no visibility-mask loader or navigation mesh.
 
-VR movement uses 30° snap turns. Push the left stick forward to aim and release to teleport. Press the left Menu button to exit when the browser exposes it. Y also exits on Touch controllers. The viewer estimates one floor level and checks each path and landing against floor coverage and obstacles inferred from the splats. Movement is restricted to supported parts of that level. Sparse or noisy scans can limit valid targets.
+Push the left stick forward to aim the controller. Release when the landing ring is visible to teleport. Walls and gaps in scan coverage cancel the landing. Flick the right stick to turn 30°. Press Menu or Y on the left controller to exit. Menu requires browser support.
+
+VR aligns the estimated scan floor with Quest's tracked floor. The viewer uses one floor level and may move the starting point to nearby clear floor. It derives walkable areas from the SPZ, so sparse scans can limit teleporting.
 
 Physical-headset testing is pending.
 
