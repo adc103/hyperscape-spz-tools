@@ -3,3 +3,4 @@
 *.apk
 *.zip
 *.bin
+__pycache__/
