@@ -6,6 +6,7 @@ const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
 const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
 let resources, model, gpuModel, eyesHistory=[], sortData;
 let drawCount=0, quality=1, lastMs=0, tick=0, activeQuery=null;
+let xrQualitySamples=0, xrQualityAverage=0;
 
 function program(vertex,fragment) {
     const handle=gl.createProgram();
@@ -170,6 +171,9 @@ function bindTexture(unit,target,texture,uniform) {
     gl.bindTexture(target,texture);
     gl.uniform1i(uniform,unit);
 }
+function viewColorDegree() {
+    return $('viewColor')?.checked===false?0:model.degree;
+}
 function drawLayer(layer, eye, focal, detailEye, viewport) {
     gl.bindFramebuffer(gl.FRAMEBUFFER,layer.fb);
     if(viewport) {
@@ -204,7 +208,7 @@ function drawLayer(layer, eye, focal, detailEye, viewport) {
     gl.uniform3fv(u.detailEye,detailEye);
     gl.uniform2f(u.peripheralMip,frame.foveationRadius??0,frame.mipFadePercent??0);
     gl.uniform2fv(u.peripheralCenter,eye.peripheral);
-    gl.uniform1i(u.degree,model.degree);
+    gl.uniform1i(u.degree,viewColorDegree());
     gl.uniform1i(u.mip,$('mip').checked);
     gl.uniform1i(u.shFoveated,$('sh').checked);
     gl.uniform1i(u.quant,$('quant').checked);
@@ -246,8 +250,19 @@ function compose(full,low,eye,x,width,reprojection,target=null,y=0,height=canvas
 function adaptiveEnabled() {
     return immersiveRunning?$('xrAdaptive').checked:$('adaptive').checked;
 }
+function resetXRQualityFilter() {
+    xrQualitySamples=0;
+    xrQualityAverage=0;
+}
 function updateQuality(ms,budget=frame.gpuBudgetMs??13.8) {
     if(!adaptiveEnabled()||ms<=0) return;
+    if(immersiveRunning) {
+        xrQualityAverage=xrQualitySamples?xrQualityAverage*.88+ms*.12:ms;
+        if(++xrQualitySamples%12!==0) return;
+        if(xrQualityAverage>budget*1.13) quality=Math.max(.1,quality-.035);
+        else if(xrQualitySamples%36===0&&xrQualityAverage<budget*.79) quality=Math.min(1,quality+.02);
+        return;
+    }
     const change=Math.max(-.1,Math.min(.1,.2*(budget/ms-1)));
     quality=Math.max(.1,Math.min(1,quality*(1+change)));
 }

@@ -44,12 +44,13 @@ function xrEye(xrView, origin, basis) {
     };
 }
 
-function createXRSort(session,cap) {
+function createXRSort(session,cap,origin,onNavigation) {
     const worker=new Worker('sort-worker.js');
     const points=model.points.slice(0,model.n*4);
-    worker.postMessage({points},[points.buffer]);
+    worker.postMessage({points,origin},[points.buffer]);
     let buffer=new ArrayBuffer(model.n*4), spare=new ArrayBuffer(model.n*4), latest, last, pending=false, failure;
     worker.onmessage=({data})=>{
+        if(data.nav) {onNavigation(readNavigation(data.nav,origin));return;}
         pending=false;
         latest=new Uint32Array(data.buffer,0,data.count);
     };
@@ -57,6 +58,7 @@ function createXRSort(session,cap) {
     session.addEventListener('end',()=>worker.terminate(),{once:true});
     return (eyes,center,time)=>{
         if(failure) throw failure;
+        const previous=last;
         const result=latest;
         if(result) {
             latest=null;
@@ -79,12 +81,65 @@ function createXRSort(session,cap) {
             last={time,center,forward:eye.f,right:eye.right,signature};
             pending=true;
         }
-        return result;
+        const stale=result&&previous&&(
+            Math.hypot(center[0]-previous.center[0],center[1]-previous.center[1],center[2]-previous.center[2])>.45||
+            dot(eye.f,previous.forward)<.92);
+        return stale?undefined:result;
     };
 }
 
-function xrNeedsComposite(dual,marker) {
-    return dual||!!marker||!!frame.alpha||!!frame.frontToBack||$('color').value==='2';
+function xrNeedsComposite(dual) {
+    return dual||!!frame.alpha||!!frame.frontToBack||$('color').value==='2';
+}
+
+// Project a small ground ring so aiming can keep the direct splat render path.
+const ringVertices=50;
+const ringShape=Float32Array.from({length:ringVertices*2},(_,i)=>{
+    const vertex=i>>1;
+    const angle=(vertex>>1)*Math.PI/12;
+    const radius=vertex&1?.23:.16;
+    return radius*(i&1?Math.sin(angle):Math.cos(angle));
+});
+function projectRing(vertices,eye,marker) {
+    const m=eye.xrView.projectionMatrix,{pos,right,down,f}=eye;
+    const z=marker[2]+.012-pos[2];
+    for(let i=0;i<ringVertices;i++) {
+        const x=marker[0]+ringShape[i*2]-pos[0],y=marker[1]+ringShape[i*2+1]-pos[1];
+        const a=x*right[0]+y*right[1]+z*right[2];
+        const b=-(x*down[0]+y*down[1]+z*down[2]);
+        const c=-(x*f[0]+y*f[1]+z*f[2]);
+        const k=i*4;
+        for(let j=0;j<4;j++) vertices[k+j]=m[j]*a+m[4+j]*b+m[8+j]*c+m[12+j];
+    }
+    return vertices;
+}
+function createGLRing() {
+    const {handle}=program(`#version 300 es
+layout(location=0) in vec4 point;
+void main(){gl_Position=point;}`,`#version 300 es
+precision highp float;
+out vec4 color;
+void main(){color=vec4(.92,.81,.44,1);}`);
+    const vao=gl.createVertexArray(),buffer=gl.createBuffer(),vertices=new Float32Array(ringVertices*4);
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+    gl.vertexAttribPointer(0,4,gl.FLOAT,false,0,0);
+    gl.enableVertexAttribArray(0);
+    return {
+        draw(eye,target) {
+            gl.disable(gl.BLEND);
+            gl.useProgram(handle);
+            gl.bindVertexArray(vao);
+            gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+            gl.bufferData(gl.ARRAY_BUFFER,projectRing(vertices,eye,target),gl.DYNAMIC_DRAW);
+            gl.drawArrays(gl.TRIANGLE_STRIP,0,ringVertices);
+        },
+        destroy() {
+            gl.deleteProgram(handle);
+            gl.deleteBuffer(buffer);
+            gl.deleteVertexArray(vao);
+        }
+    };
 }
 
 async function createXRGlRenderer(session,scale) {
@@ -93,9 +148,11 @@ async function createXRGlRenderer(session,scale) {
     const layer=new XRWebGLLayer(session,gl,{alpha:false,antialias:false,depth:false,framebufferScaleFactor:scale});
     session.updateRenderState({baseLayer:layer});
     const layers=[],output={};
+    const ring=createGLRing();
     return {
         label:'Immersive WebGL',
         destroy() {
+            ring.destroy();
             for(const eye of layers) for(const part of [eye.full,eye.low]) {
                 if(!part) continue;
                 gl.deleteTexture(part.texture);
@@ -115,13 +172,14 @@ async function createXRGlRenderer(session,scale) {
             gl.clearColor(0,0,0,1);
             gl.clear(gl.COLOR_BUFFER_BIT);
             const {dual,reuse}=xrFramePlan();
-            const offscreen=xrNeedsComposite(dual,target);
+            const offscreen=xrNeedsComposite(dual);
             const measuring=beginGlTiming();
             try {
                 for(const [i,eye] of eyes.entries()) {
                     const {x,y,width,height}=viewports[i];
                     if(!offscreen) {
                         drawLayer(output,eye,focal,center,viewports[i]);
+                        if(target) ring.draw(eye,target);
                         continue;
                     }
                     const cache=layers[i] ||= {};
@@ -159,15 +217,16 @@ function teleportTarget(frame,space,input,head,basis,origin,floor) {
         origin[1]+hand[1]+direction[1]/horizontal*distance,floor];
 }
 
-function createLocomotion(origin,startYaw) {
+function createLocomotion(origin,startYaw,getNavigation) {
     let yaw=startYaw, turnHeld=false, aimHeld=false, target=null;
-    const floor=origin[2]-1.6;
+
     return (frame,space,head,inputs)=>{
         let changed=false;
         const left=[...inputs].find(input=>input.handedness==='left');
         const right=[...inputs].find(input=>input.handedness==='right');
         const [turn]=joystick(right), [,forward]=joystick(left);
         const {x,y,z}=head.transform.position;
+        const nav=getNavigation();
         if(Math.abs(turn)<.3) turnHeld=false;
         if(!turnHeld&&Math.abs(turn)>.7) {
             turnHeld=true;
@@ -179,12 +238,14 @@ function createLocomotion(origin,startYaw) {
             changed=true;
         }
         const basis=worldBasis(yaw);
+        const offset=toWorld(x,y,z,basis);
+        const from=offset.map((value,i)=>origin[i]+value);
         if(left&&forward<-.65) aimHeld=true;
         if(aimHeld&&left&&forward<-.25) {
-            target=teleportTarget(frame,space,left,head,basis,origin,floor);
+            const candidate=nav&&teleportTarget(frame,space,left,head,basis,origin,nav.floor);
+            target=candidate?limitTeleport(nav,from,candidate):null;
         } else if(aimHeld) {
-            if(left&&Math.abs(forward)<.25&&target) {
-                const offset=toWorld(x,y,z,basis);
+            if(left&&Math.abs(forward)<.25&&target&&validTeleport(nav,from,target)) {
                 origin[0]=target[0]-offset[0];
                 origin[1]=target[1]-offset[1];
                 changed=true;
@@ -222,10 +283,13 @@ enter.onclick=async()=>{
         const scale=Number($('xrScale').value);
         const performanceMode=scale<=.50;
         const cap=performanceMode?35000:scale<=.65?65000:model.n;
-        const sorted=createXRSort(session,cap);
+        const origin=[...pose.eye];
+        let navigation;
+        const sorted=createXRSort(session,cap,[...origin],nav=>{navigation=nav;});
         const previewQuality=quality;
         drawCount=0;
         quality=1;
+        resetXRQualityFilter();
         session.addEventListener('end',()=>{quality=previewQuality;},{once:true});
         try {
             renderer=gpuMode?await createXRGPURenderer(session,xrSource,scale):await createXRGlRenderer(session,scale);
@@ -238,9 +302,8 @@ enter.onclick=async()=>{
         }
         session.updateRenderState({depthNear:.10,depthFar:1500});
         const space=await session.requestReferenceSpace('local');
-        const origin=[...pose.eye];
-        const move=createLocomotion(origin,pose.yaw);
-        let previousTime,average=0,samples=0;
+        const move=createLocomotion(origin,pose.yaw,()=>navigation);
+        let previousTime;
         tick=0;
         const gpuTiming=renderer.canTime??!!gpuTimer;
         const frameBudget=session.frameRate?1000/session.frameRate:1000/72;
@@ -255,10 +318,7 @@ enter.onclick=async()=>{
                 totalTime+=elapsed;
                 frames++;
             }
-            if(!gpuTiming&&adaptiveEnabled()&&elapsed>0&&elapsed<100) {
-                average=average?average*.9+elapsed*.1:elapsed;
-                if(++samples%12===0) updateQuality(average,frameBudget);
-            }
+            if(!gpuTiming&&elapsed>0&&elapsed<100) updateQuality(elapsed,frameBudget);
             previousTime=time;
             const {basis,target,changed}=move(frame,space,head,session.inputSources);
             if(changed) tick=0;

@@ -258,6 +258,17 @@ async function createXRGPURenderer(session,src,scale) {
             layout:'auto',vertex:{module:compositeShader,entryPoint:'screen'},
             fragment:{module:compositeShader,entryPoint:'composite',targets:[{format}]}
         });
+        const ringShader=device.createShaderModule({code:`
+@vertex fn position(@location(0) point: vec4f) -> @builtin(position) vec4f { return point; }
+@fragment fn color() -> @location(0) vec4f { return vec4f(.92,.81,.44,1); }`});
+        const ring=await device.createRenderPipelineAsync({
+            layout:'auto',vertex:{module:ringShader,entryPoint:'position',buffers:[
+                {arrayStride:16,attributes:[{format:'float32x4',offset:0,shaderLocation:0}]}
+            ]},
+            fragment:{module:ringShader,entryPoint:'color',targets:[{format}]},
+            primitive:{topology:'triangle-strip'}
+        });
+        const ringPoints=new Float32Array(ringVertices*4);
         const sampler=device.createSampler({magFilter:'linear',minFilter:'linear'});
         const data=new Float32Array(src.n*16);
         for(let i=0;i<src.n;i++) {
@@ -292,7 +303,7 @@ async function createXRGPURenderer(session,src,scale) {
             return {width,height,texture,view:texture.createView(),
                 uniform:old?.uniform??buffer(208,GPUBufferUsage.UNIFORM),bindings:old?.bindings??[]};
         }
-        function renderTarget(encoder,target,eye,focal,center,pipelineIndex,timestampWrites,output) {
+        function renderTarget(encoder,target,eye,focal,center,pipelineIndex,timestampWrites,output,marker) {
             target.eye=eye;
             packed.set(eye.xrView.projectionMatrix,0);
             packed.set(eye.pos,16);packed.set(eye.right,20);
@@ -302,7 +313,7 @@ async function createXRGPURenderer(session,src,scale) {
             packed.set([frame.foveationRadius??0,frame.mipFadePercent??0,...eye.peripheral],40);
             packed.set([lod.start,lod.end,lod.near,lod.far],44);
             packed.set([...center,quality],48);
-            mode.set([src.width*src.height,src.degree,Number($('mip').checked),
+            mode.set([src.width*src.height,viewColorDegree(),Number($('mip').checked),
                 Number($('sh').checked)|Number($('quant').checked)*2|Number($('color').value==='1')*4]);
             device.queue.writeBuffer(target.uniform,0,packed);
             const pipeline=pipelines[pipelineIndex];
@@ -318,6 +329,13 @@ async function createXRGPURenderer(session,src,scale) {
             pass.setPipeline(pipeline);
             pass.setBindGroup(0,bind);
             pass.draw(4,drawCount);
+            if(marker) {
+                target.ring??=buffer(ringPoints.byteLength,GPUBufferUsage.VERTEX);
+                device.queue.writeBuffer(target.ring,0,projectRing(ringPoints,eye,marker));
+                pass.setPipeline(ring);
+                pass.setVertexBuffer(0,target.ring);
+                pass.draw(ringVertices);
+            }
             pass.end();
         }
         function composeEye(encoder,entry,eye,low,reuse,image,attachment,timestampWrites,marker) {
@@ -373,7 +391,7 @@ async function createXRGPURenderer(session,src,scale) {
                     first=false;
                     return {querySet:timer.queries,beginningOfPassWriteIndex:0};
                 };
-                const offscreen=xrNeedsComposite(dual,marker);
+                const offscreen=xrNeedsComposite(dual);
                 const descriptors=images.map(image=>image.getViewDescriptor());
                 for(const [i,eye] of eyes.entries()) {
                     const image=images[i],{width,height}=image.viewport;
@@ -388,7 +406,7 @@ async function createXRGPURenderer(session,src,scale) {
                         target.viewport=image.viewport;
                         const start=stamp();
                         const timestampWrites=start&&end?{...start,...end}:start??end;
-                        renderTarget(encoder,target,eye,focal,center,2,timestampWrites,attachment);
+                        renderTarget(encoder,target,eye,focal,center,2,timestampWrites,attachment,marker);
                         continue;
                     }
                     const front=Number(!!frame.frontToBack);

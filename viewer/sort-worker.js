@@ -1,5 +1,7 @@
 'use strict';
 
+importScripts('navigation.js');
+
 let points, ids, scratch, keys;
 const bins=new Uint32Array(256);
 const float=new Float32Array(1);
@@ -78,6 +80,10 @@ self.onmessage=({data})=>{
         ids=new Uint32Array(size);
         scratch=new Uint32Array(size);
         keys=new Uint32Array(size);
+        if(data.origin) {
+            const nav=buildNavigation(points,data.origin);
+            self.postMessage({nav},[nav.walkable.buffer,nav.blocked.buffer]);
+        }
         return;
     }
     const output=new Uint32Array(data.buffer);
