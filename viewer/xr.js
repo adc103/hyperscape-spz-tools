@@ -154,17 +154,39 @@ function teleportTarget(frame,space,input,head,basis,origin,floor) {
     const horizontal=Math.hypot(direction[0],direction[1]);
     if(horizontal<.12||direction[2]>.45) return null;
     const hand=toWorld(m[12],m[13],m[14],basis);
-    const distance=direction[2]<-.12
-        ?Math.max(.35,Math.min(5,(origin[2]+hand[2]-floor)*horizontal/-direction[2]))
-        :2.5;
+    const slope=-direction[2];
+    const t=Math.max(0,Math.min(1,(slope-.12)/.20));
+    const rayDistance=Math.max(.35,Math.min(5,(origin[2]+hand[2]-floor)*horizontal/Math.max(.12,slope)));
+    const distance=2.5+(rayDistance-2.5)*t*t*(3-2*t);
     return [origin[0]+hand[0]+direction[0]/horizontal*distance,
         origin[1]+hand[1]+direction[1]/horizontal*distance,floor];
+}
+
+function steadyTeleportTarget(nav,from,previous,next,elapsed) {
+    if(!previous||!next) return next;
+    const dx=next[0]-previous[0],dy=next[1]-previous[1];
+    if(!validTeleport(nav,from,previous)) return next;
+    if(Math.hypot(dx,dy)<.025) return previous;
+    const blend=1-Math.exp(-elapsed/52);
+    const point=[previous[0]+dx*blend,previous[1]+dy*blend,next[2]];
+    return validTeleport(nav,from,point)?point:next;
+}
+
+function exitPressed(input) {
+    const pad=input?.gamepad;
+    if(!pad||input.handedness!=='left'||pad.mapping!=='xr-standard') return false;
+    const profiles=input.profiles??[];
+    const touch=profiles.some(profile=>/^oculus-touch($|-)|^meta-quest-touch($|-)/.test(profile));
+    if(!touch) return false;
+    // Touch Plus, Touch Pro and Touch v3 report Menu at index 7 when the browser exposes it.
+    const hasMenu=profiles.includes('meta-quest-touch-plus')||profiles.includes('meta-quest-touch-pro')||profiles.includes('oculus-touch-v3');
+    return !!((hasMenu&&pad.buttons[7]?.pressed)||pad.buttons[5]?.pressed);
 }
 
 function createLocomotion(origin,startYaw,getNavigation) {
     let yaw=startYaw, turnHeld=false, aimHeld=false, target=null;
 
-    return (frame,space,head,inputs)=>{
+    return (frame,space,head,inputs,elapsed=16)=>{
         let changed=false;
         const left=[...inputs].find(input=>input.handedness==='left');
         const right=[...inputs].find(input=>input.handedness==='right');
@@ -187,7 +209,8 @@ function createLocomotion(origin,startYaw,getNavigation) {
         if(left&&forward<-.65) aimHeld=true;
         if(aimHeld&&left&&forward<-.25) {
             const candidate=nav&&teleportTarget(frame,space,left,head,basis,origin,nav.floor);
-            target=candidate?limitTeleport(nav,from,candidate):null;
+            const next=candidate?limitTeleport(nav,from,candidate):null;
+            target=steadyTeleportTarget(nav,from,changed?null:target,next,elapsed);
         } else if(aimHeld) {
             if(left&&Math.abs(forward)<.25&&target&&validTeleport(nav,from,target)) {
                 origin[0]=target[0]-offset[0];
@@ -252,6 +275,14 @@ enter.onclick=async()=>{
         xrStatus.textContent=renderer.label;
         const animate=(time,frame)=>{
             if(failed) return;
+            const left=[...session.inputSources].find(input=>input.handedness==='left');
+            if(exitPressed(left)) {
+                session.end().catch(error=>{
+                    xrStatus.textContent='Could not exit VR. '+error.message;
+                    session.requestAnimationFrame(animate);
+                });
+                return;
+            }
             session.requestAnimationFrame(animate);
             const head=frame.getViewerPose(space);
             if(!head?.views.length) return;
@@ -261,7 +292,7 @@ enter.onclick=async()=>{
                 frames++;
             }
             previousTime=time;
-            const {basis,target,changed}=move(frame,space,head,session.inputSources);
+            const {basis,target,changed}=move(frame,space,head,session.inputSources,Math.min(100,elapsed||16));
             if(changed) tick=0;
             const eyes=[...head.views].map(view=>xrEye(view,origin,basis));
             const center=eyes[0].pos.map((v,i)=>(v+eyes.at(-1).pos[i])*.5);
