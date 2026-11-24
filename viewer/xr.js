@@ -44,7 +44,7 @@ function xrEye(xrView, origin, basis) {
     };
 }
 
-function createXRSort(session,cap,origin,onNavigation) {
+function createXRSort(session,origin,onNavigation) {
     const worker=new Worker('sort-worker.js');
     const points=model.points.slice(0,model.n*4);
     worker.postMessage({points,origin},[points.buffer]);
@@ -58,7 +58,6 @@ function createXRSort(session,cap,origin,onNavigation) {
     session.addEventListener('end',()=>worker.terminate(),{once:true});
     return (eyes,center,time)=>{
         if(failure) throw failure;
-        const previous=last;
         const result=latest;
         if(result) {
             latest=null;
@@ -67,8 +66,9 @@ function createXRSort(session,cap,origin,onNavigation) {
             spare=result.buffer;
         }
         const lod=detailParameters();
+        // A default first-N cutoff changes the visible set when only the head angle changes.
         const options={detail:$('lod').checked,lod,quality:Math.round(quality*100)/100,narrow:$('sort').value==='16',
-            front:!!frame.frontToBack,cap:Math.max(1,Math.floor(Math.min(cap,frame.maxSplats??model.n)*quality))};
+            front:!!frame.frontToBack,cap:Math.min(frame.maxSplats??model.n,model.n)};
         const signature=JSON.stringify(options);
         const eye=eyes[0];
         const moved=!last||Math.hypot(center[0]-last.center[0],center[1]-last.center[1],center[2]-last.center[2])>.035||
@@ -81,65 +81,12 @@ function createXRSort(session,cap,origin,onNavigation) {
             last={time,center,forward:eye.f,right:eye.right,signature};
             pending=true;
         }
-        const stale=result&&previous&&(
-            Math.hypot(center[0]-previous.center[0],center[1]-previous.center[1],center[2]-previous.center[2])>.45||
-            dot(eye.f,previous.forward)<.92);
-        return stale?undefined:result;
+        return result;
     };
 }
 
-function xrNeedsComposite(dual) {
-    return dual||!!frame.alpha||!!frame.frontToBack||$('color').value==='2';
-}
-
-// Project a small ground ring so aiming can keep the direct splat render path.
-const ringVertices=50;
-const ringShape=Float32Array.from({length:ringVertices*2},(_,i)=>{
-    const vertex=i>>1;
-    const angle=(vertex>>1)*Math.PI/12;
-    const radius=vertex&1?.23:.16;
-    return radius*(i&1?Math.sin(angle):Math.cos(angle));
-});
-function projectRing(vertices,eye,marker) {
-    const m=eye.xrView.projectionMatrix,{pos,right,down,f}=eye;
-    const z=marker[2]+.012-pos[2];
-    for(let i=0;i<ringVertices;i++) {
-        const x=marker[0]+ringShape[i*2]-pos[0],y=marker[1]+ringShape[i*2+1]-pos[1];
-        const a=x*right[0]+y*right[1]+z*right[2];
-        const b=-(x*down[0]+y*down[1]+z*down[2]);
-        const c=-(x*f[0]+y*f[1]+z*f[2]);
-        const k=i*4;
-        for(let j=0;j<4;j++) vertices[k+j]=m[j]*a+m[4+j]*b+m[8+j]*c+m[12+j];
-    }
-    return vertices;
-}
-function createGLRing() {
-    const {handle}=program(`#version 300 es
-layout(location=0) in vec4 point;
-void main(){gl_Position=point;}`,`#version 300 es
-precision highp float;
-out vec4 color;
-void main(){color=vec4(.92,.81,.44,1);}`);
-    const vao=gl.createVertexArray(),buffer=gl.createBuffer(),vertices=new Float32Array(ringVertices*4);
-    gl.bindVertexArray(vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
-    gl.vertexAttribPointer(0,4,gl.FLOAT,false,0,0);
-    gl.enableVertexAttribArray(0);
-    return {
-        draw(eye,target) {
-            gl.disable(gl.BLEND);
-            gl.useProgram(handle);
-            gl.bindVertexArray(vao);
-            gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
-            gl.bufferData(gl.ARRAY_BUFFER,projectRing(vertices,eye,target),gl.DYNAMIC_DRAW);
-            gl.drawArrays(gl.TRIANGLE_STRIP,0,ringVertices);
-        },
-        destroy() {
-            gl.deleteProgram(handle);
-            gl.deleteBuffer(buffer);
-            gl.deleteVertexArray(vao);
-        }
-    };
+function xrNeedsComposite(dual,marker) {
+    return dual||!!marker||!!frame.alpha||!!frame.frontToBack||$('color').value==='2';
 }
 
 async function createXRGlRenderer(session,scale) {
@@ -148,11 +95,9 @@ async function createXRGlRenderer(session,scale) {
     const layer=new XRWebGLLayer(session,gl,{alpha:false,antialias:false,depth:false,framebufferScaleFactor:scale});
     session.updateRenderState({baseLayer:layer});
     const layers=[],output={};
-    const ring=createGLRing();
     return {
         label:'Immersive WebGL',
         destroy() {
-            ring.destroy();
             for(const eye of layers) for(const part of [eye.full,eye.low]) {
                 if(!part) continue;
                 gl.deleteTexture(part.texture);
@@ -172,14 +117,13 @@ async function createXRGlRenderer(session,scale) {
             gl.clearColor(0,0,0,1);
             gl.clear(gl.COLOR_BUFFER_BIT);
             const {dual,reuse}=xrFramePlan();
-            const offscreen=xrNeedsComposite(dual);
+            const offscreen=xrNeedsComposite(dual,target);
             const measuring=beginGlTiming();
             try {
                 for(const [i,eye] of eyes.entries()) {
                     const {x,y,width,height}=viewports[i];
                     if(!offscreen) {
                         drawLayer(output,eye,focal,center,viewports[i]);
-                        if(target) ring.draw(eye,target);
                         continue;
                     }
                     const cache=layers[i] ||= {};
@@ -275,21 +219,19 @@ enter.onclick=async()=>{
                 xrStatus.textContent=renderer.label+' · '+rate+' XR frames/s last session';
             }
             renderer?.destroy();
+            $('xrAdaptive').disabled=false;
             immersiveRunning=false;
             starting=false;
             xrAvailable();
             requestRender();
         },{once:true});
         const scale=Number($('xrScale').value);
-        const performanceMode=scale<=.50;
-        const cap=performanceMode?35000:scale<=.65?65000:model.n;
         const origin=[...pose.eye];
         let navigation;
-        const sorted=createXRSort(session,cap,[...origin],nav=>{navigation=nav;});
+        const sorted=createXRSort(session,[...origin],nav=>{navigation=nav;});
         const previewQuality=quality;
         drawCount=0;
         quality=1;
-        resetXRQualityFilter();
         session.addEventListener('end',()=>{quality=previewQuality;},{once:true});
         try {
             renderer=gpuMode?await createXRGPURenderer(session,xrSource,scale):await createXRGlRenderer(session,scale);
@@ -306,7 +248,7 @@ enter.onclick=async()=>{
         let previousTime;
         tick=0;
         const gpuTiming=renderer.canTime??!!gpuTimer;
-        const frameBudget=session.frameRate?1000/session.frameRate:1000/72;
+        $('xrAdaptive').disabled=!gpuTiming;
         xrStatus.textContent=renderer.label;
         const animate=(time,frame)=>{
             if(failed) return;
@@ -318,7 +260,6 @@ enter.onclick=async()=>{
                 totalTime+=elapsed;
                 frames++;
             }
-            if(!gpuTiming&&elapsed>0&&elapsed<100) updateQuality(elapsed,frameBudget);
             previousTime=time;
             const {basis,target,changed}=move(frame,space,head,session.inputSources);
             if(changed) tick=0;

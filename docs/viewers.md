@@ -6,7 +6,7 @@
 | Distance-based detail, 16-bit and 32-bit sorting | Yes | Yes |
 | Stereo | Simulated or calibrated | Headset pose and per-eye projection |
 | Two-resolution composition and frame reuse | Optional | Optional |
-| Adaptive quality | GPU timer queries when available | GPU timing or headset frame cadence |
+| Adaptive quality | GPU timer queries when available | GPU timer queries when available |
 | Color conversion | Per splat or composite | Per splat or composite |
 
 The Quest viewer prefers WebGPU when the browser exposes the WebXR binding. Otherwise it uses immersive WebGL. If WebGPU setup fails, select **Enter VR** again to use WebGL. The status line shows the active backend.
@@ -15,7 +15,7 @@ In VR, the headset supplies eye poses, projections, and render size. Frame JSON 
 
 ## Quest performance
 
-Performance is the default. It uses 50% render scale, a 35,000-splat starting ceiling and adaptive quality. Balanced starts at 65% and 65,000 splats. High starts at 85% with the scan's full count available. A worker culls and sorts splats. The GPU projects, shades, and blends both eyes. VR draws directly to the headset when no compositing effects are active. Two-resolution rendering and frame reuse are optional. Foveated SH starts off in VR. Disable view-dependent color to use fixed colors.
+Performance, Balanced, and High use 50%, 65%, and 85% render scale. They share the same distance-based detail settings. A worker culls and sorts splats. The GPU projects, shades, and blends both eyes. Two-resolution rendering and frame reuse are optional.
 
 The rendering reference also covers native visibility masks, navigation meshes, and compositor behavior. The SPZ-only viewer uses browser frustum culling and the WebXR compositor. It has no visibility-mask loader or navigation mesh.
 
