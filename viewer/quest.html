@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hyperscape Quest Viewer</title>
+<style>
+:root{color-scheme:dark;font:15px/1.45 system-ui;background:#171a1a;color:#efefea;--accent:#e6c988;--line:#373a37}
+*{box-sizing:border-box}body{margin:0;display:grid;grid-template-columns:285px minmax(0,1fr);min-height:100dvh}
+aside{padding:22px;overflow:auto;max-height:100dvh;background:#202322;border-right:1px solid var(--line)}
+h1{font:600 24px/1.12 Georgia,serif;margin:0 0 20px;color:var(--accent)}
+h2{font-size:13px;margin:0 0 8px} section,details{padding:14px 0;border-bottom:1px solid var(--line)}
+button,select{font:inherit;color:inherit;background:#303431;border:1px solid #555950;border-radius:6px;padding:7px 10px}
+button:hover,select:hover{border-color:var(--accent)}button:disabled{opacity:.45}button:focus-visible,select:focus-visible,summary:focus-visible,canvas:focus-visible{outline:2px solid var(--accent)}
+.primary{background:var(--accent);color:#24221b;border-color:var(--accent);font-weight:650;width:100%}
+label{display:flex;align-items:center;gap:8px;margin:8px 0}input{accent-color:var(--accent)}
+p{margin:8px 0;color:#c2c5bc;font-size:13px}summary{cursor:pointer;font-weight:600}
+main{position:relative;min-height:65dvh;overflow:hidden;background:#121413}canvas{position:absolute;width:100%;height:100%;touch-action:none;cursor:grab;display:block}canvas:active{cursor:grabbing}
+#empty{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;padding:26px;text-align:center}
+#empty[hidden]{display:none}#empty strong{font:34px Georgia,serif;color:#eee0c2}#status{min-height:2em;overflow-wrap:anywhere}#status.error{color:#ffad9e}
+#stats{position:absolute;bottom:15px;left:15px;margin:0;background:#161716dc;padding:7px 11px;border-radius:6px;pointer-events:none}
+select{max-width:100%}.row{display:flex;gap:7px;flex-wrap:wrap}.small{font-size:12px}
+@media(max-width:680px){body{display:flex;flex-direction:column-reverse}aside{max-height:none;border-right:0}main{height:63dvh}}
+</style>
+<aside>
+<h1>Hyperscape Quest Viewer</h1>
+<p><a href="desktop.html">Desktop viewer</a></p>
+<section><h2>Immersive viewing</h2>
+<button id="enterVr" disabled>Enter VR</button>
+<p id="xrStatus" role="status">Checking WebXR support…</p>
+<label>VR resolution <select id="xrScale"><option value="0.65">Balanced</option><option value="0.50">Performance</option><option value="0.85">High</option></select></label>
+<p>Position the preview camera before entering VR. In VR, use the left stick to move and the right stick to turn.</p>
+</section>
+<button id="open" class="primary">Open SPZ</button><input id="file" type="file" accept=".spz" hidden>
+<p id="status" role="status">Files stay on this device.</p>
+<section><h2>Scene data</h2><button id="side">Add companion files</button><input id="sideFile" type="file" multiple accept=".zip,.json,.bin" hidden><p id="sideStatus">Visibility ZIP or centroid JSON and mask BIN.</p></section>
+<section><h2>Camera</h2><div class="row"><button id="reset">Reset</button><button id="entry" hidden>Capture viewpoint</button></div>
+<label><input id="stereo" type="checkbox"> Side-by-side stereo</label>
+<p>Drag to look. Use W A S D to move, Q and E for height, or scroll forward and back.</p></section>
+<details><summary>Rendering settings</summary>
+<label><input id="mask" type="checkbox" checked> Visibility masks</label>
+<label><input id="mip" type="checkbox" checked> Mip-Splatting</label>
+<label><input id="sh" type="checkbox"> Foveated spherical harmonics</label>
+<label><input id="quant" type="checkbox"> 8-bit SH quantization</label>
+<label><input id="lod" type="checkbox" checked> Distance-based detail</label>
+<label><input id="adaptive" type="checkbox"> Adaptive GPU budget</label>
+<label><input id="foveation" type="checkbox"> Two-resolution composition</label>
+<label>Reuse layer <select id="reuse"><option value="0">Off</option><option value="1">Low resolution</option><option value="2">High resolution</option></select></label>
+<label>Color conversion <select id="color"><option value="0">Off</option><option value="1">Per splat</option><option value="2">Composite</option></select></label>
+<label>Sort keys <select id="sort"><option value="32">32-bit distance</option><option value="16">16-bit distance</option></select></label>
+<button id="openFrame">Load frame settings</button> <button id="clearFrame" hidden>Clear</button><input id="frameFile" type="file" accept=".json" hidden>
+<p id="frameStatus">Optional JSON for calibrated eyes, scene depth and render controls.</p>
+<details><summary>Frame settings format</summary><p>Optional <code>eyes</code> (one or two) each have <code>position</code>, <code>forward</code>, <code>down</code>, <code>right</code> (unit vectors in the scan's coordinates), <code>tan</code> (two positive half-FOV tangents), and optional NDC <code>shift</code> and <code>fovea</code>. Each eye can include <code>depth</code> with <code>width</code>, <code>height</code> and <code>meters</code> (top-to-bottom linear camera depth, 0 for unknown).</p><p>Optional top-level controls are <code>near</code>, <code>far</code>, <code>width</code> and <code>height</code> (full-resolution intermediate per eye), <code>depthOffset</code>, <code>foveationRadius</code>, <code>mipFadePercent</code>, <code>detailNear</code>, <code>detailFar</code>, <code>distanceNear</code>, <code>distanceFar</code>, <code>detailFade</code>, <code>frontToBack</code> (boolean), <code>maxSplats</code>, <code>gpuBudgetMs</code>, <code>clipDepth</code> (0.01 or 0.99), and <code>alpha</code> with <code>power</code>, <code>threshold</code>, <code>boost</code>, <code>offset</code>, <code>cutoff</code>, and <code>unpremultiply</code>.</p></details>
+<p>The browser viewer uses its own visibility compaction, GPU timer feedback, and two-resolution layer sizes. Quest runtime settings can be supplied where exposed above.</p>
+</details>
+</aside>
+<main id="viewport"><canvas id="view" tabindex="0" aria-label="3D scene. Drag to look and use WASD to move."></canvas><div id="empty"><div><strong>Open a room scan</strong><p>Choose or drop a Hyperscape SPZ file.</p></div></div><p id="stats" hidden></p></main>
+
+<script src="format.js"></script>
+<script src="shaders.js"></script>
+<script src="render.js"></script>
+<script src="frame.js"></script>
+<script src="app.js"></script>
+<script src="webgpu.js"></script>
+<script src="xr.js"></script>
+</html>
