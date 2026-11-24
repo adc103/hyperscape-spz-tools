@@ -45,7 +45,7 @@ function xrEye(xrView, origin, basis) {
 }
 
 function createXRSort(session,origin,onNavigation,onError) {
-    const worker=new Worker('sort-worker.js?v=4');
+    const worker=new Worker('sort-worker.js?v=5');
     const points=model.points.slice(0,model.n*4);
     worker.postMessage({points,origin},[points.buffer]);
     let buffer=new ArrayBuffer(model.n*4), spare=new ArrayBuffer(model.n*4), latest, last, pending=false, failure;
@@ -279,7 +279,7 @@ function createLocomotion(origin,startYaw,getNavigation) {
             aim=teleportAim(frame,space,left,basis,origin,from,nav);
         } else if(aimHeld) {
             const target=aim?.target;
-            if(left&&!changed&&Math.abs(forward)<.25&&target&&validTeleport(nav,from,target)) {
+            if(left&&!changed&&Math.abs(forward)<.25&&target&&canReachLanding(nav,from,target)) {
                 origin[0]=target[0]-offset[0];
                 origin[1]=target[1]-offset[1];
                 origin[2]=target[2];
