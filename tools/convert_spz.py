@@ -95,15 +95,17 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--attributes-only", action="store_true", help="Decode attributes without refitting appearance")
     parser.add_argument("--cameras", type=Path, help="Optional array of [x,y,z,yaw,pitch,horizontal_fov,roll] poses in scan coordinates")
-    parser.add_argument("--steps", type=int, default=320)
-    parser.add_argument("--width", type=int, default=480)
+    parser.add_argument("--steps", type=int, help="Fitting updates (512 automatic, 320 with custom cameras)")
+    parser.add_argument("--width", type=int, help="Reference render width (448 automatic, 480 with custom cameras)")
     parser.add_argument("--force", action="store_true", help="Replace an existing output")
     args = parser.parse_args()
     if args.output.resolve() == args.input.resolve():
         parser.error("Input and output must be different files")
     if args.output.exists() and not args.force:
         parser.error("Output exists. Use --force to replace it.")
-    if args.steps < 1 or not 128 <= args.width <= 1920:
+    steps = args.steps if args.steps is not None else (320 if args.cameras else 512)
+    width = args.width if args.width is not None else (480 if args.cameras else 448)
+    if steps < 1 or not 128 <= width <= 1920:
         parser.error("Use positive steps and a width of 128–1920")
     try:
         model = decode(args.input)
@@ -112,7 +114,7 @@ def main():
         if not args.attributes_only:
             from fit_splats import auto_cameras, fit, validate_cameras
             cameras = validate_cameras(json.loads(args.cameras.read_text())) if args.cameras else auto_cameras(model)
-            log_size, opacity = fit(model, cameras, args.steps, args.width)
+            log_size, opacity = fit(model, cameras, steps, width)
             if args.cameras is None:
                 # Automatic views may miss parts of the scan. Keep some of the original
                 # appearance in the fitted output to limit regressions on unseen views.

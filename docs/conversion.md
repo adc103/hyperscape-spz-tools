@@ -21,8 +21,8 @@ python tools/convert_spz.py scan.spz decoded.ply --attributes-only
 
 ## Set custom camera views
 
-By default the converter samples camera positions on the inferred floor and looks in several directions from each one. The automatic fit keeps some of the original scale and opacity to limit changes in areas the sampled views miss. For scans that cover multiple levels or have unreliable floor estimates, supply a JSON array of cameras with `--cameras cameras.json`. Each row contains `[x, y, z, yaw, pitch, horizontal_fov, roll]` in the source scan's Z-up coordinates. Use degrees for angles. Include views from different positions and distances for the areas that matter.
+By default the converter samples camera positions on the inferred floor and renders up to 64 views at different headings, heights, and fields of view. A second sweep gives less densely scanned areas more coverage. The automatic fit keeps some of the original scale and opacity to limit changes in areas the sampled views miss. For scans that cover multiple levels or have unreliable floor estimates, supply a JSON array of cameras with `--cameras cameras.json`. Each row contains `[x, y, z, yaw, pitch, horizontal_fov, roll]` in the source scan's Z-up coordinates. Use degrees for angles. Include views from different positions and distances for the areas that matter.
 
 `--steps` controls the number of fitting updates and `--width` controls the reference render width. Larger values take more CPU time. The output keeps its original Gaussian count and SH degree at every setting.
 
-For a finer fit, try `--width 640 --steps 480` and compare the result from the viewpoints you care about.
+The automatic fit defaults to `--width 448 --steps 512`. For a finer fit, try `--width 640 --steps 640` and compare the result from the viewpoints you care about.

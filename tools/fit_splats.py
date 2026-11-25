@@ -38,7 +38,7 @@ def validate_cameras(cameras):
     return values
 
 
-def auto_cameras(model, count=40):
+def auto_cameras(model):
     points, _, _, opacity, _, _ = model
     points = points[opacity >= .18]
     if len(points) < 20:
@@ -71,23 +71,43 @@ def auto_cameras(model, count=40):
                 candidates = clear
     if not len(candidates):
         raise ValueError("Could not place cameras on the inferred floor. Supply --cameras or use --attributes-only.")
-    rng = np.random.default_rng(54)
     # Prefer measured interior coverage and spread camera positions across it.
     support_points = (cells+.5)*step
     vicinity = cKDTree(support_points).query_ball_point(candidates, 1.25)
     density = np.array([np.sqrt(coverage[neighbors]).sum() for neighbors in vicinity])
     score = density / density.max()
-    first = int(np.argmax(score))
-    nearest = np.full(len(candidates), np.inf)
-    cameras = []
-    for i in range(min((count+3)//4,len(candidates))):
-        x,y = candidates[first]
-        heading = rng.uniform(-24,24)
-        for angle in (0,90,180,270):
-            cameras.append([x,y,floor+rng.uniform(1.45,1.75),heading+angle,-7,88,0])
-        nearest = np.minimum(nearest,np.sum((candidates-candidates[first])**2,axis=1))
-        first = int(np.argmax(np.minimum(nearest, 2.0**2)*score))
-    return np.asarray(cameras[:count])
+    return np.asarray(sample_cameras(candidates, floor, score))
+
+
+def sample_cameras(candidates, floor, score):
+    cameras, extra = [], []
+    # A core sweep establishes detail. A second sweep adds angle, height and
+    # lens variation and gives lower-density floor areas more weight.
+    for wide in (False, True):
+        rng = np.random.default_rng(54)
+        priority = np.sqrt(score) if wide else score
+        first = int(np.argmax(priority))
+        nearest = np.full(len(candidates), np.inf)
+        for i in range(min(16 if wide else 10, len(candidates))):
+            x, y = candidates[first]
+            heading = rng.uniform(0, 90) if wide else rng.uniform(-24, 24)
+            for direction, angle in enumerate((0, 90, 180, 270)):
+                if wide:
+                    height = rng.uniform(1.3, 1.78)
+                    pitch = rng.uniform(-17, 1)
+                    fov = rng.uniform(74, 100)
+                    if direction != i % 4 and (i >= 8 or direction != (i + 2) % 4):
+                        continue
+                else:
+                    height, pitch, fov = rng.uniform(1.45, 1.75), -7, 88
+                camera = [x, y, floor + height, heading + angle, pitch, fov, 0]
+                if wide and direction != i % 4:
+                    extra.append(camera)
+                else:
+                    cameras.append(camera)
+            nearest = np.minimum(nearest, np.sum((candidates - candidates[first])**2, axis=1))
+            first = int(np.argmax(np.minimum(nearest, 2.0**2) * priority))
+    return cameras + extra
 
 
 
