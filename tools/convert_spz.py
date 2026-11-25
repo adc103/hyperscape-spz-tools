@@ -94,9 +94,13 @@ def main():
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--attributes-only", action="store_true", help="Decode attributes without refitting appearance")
-    parser.add_argument("--cameras", type=Path, help="Optional array of [x,y,z,yaw,pitch,horizontal_fov,roll] poses in scan coordinates")
-    parser.add_argument("--steps", type=int, help="Fitting updates (512 automatic, 320 with custom cameras)")
-    parser.add_argument("--width", type=int, help="Reference render width (448 automatic, 480 with custom cameras)")
+    views = parser.add_mutually_exclusive_group()
+    views.add_argument("--clusters", type=Path,
+                       help="The app's cluster_centroids.json. Fits from the spots where the app places the viewer")
+    views.add_argument("--cameras", type=Path, help="Optional array of [x,y,z,yaw,pitch,horizontal_fov,roll] poses in scan coordinates")
+    parser.add_argument("--steps", type=int, help="Fitting updates (512 automatic or with clusters, 320 with custom cameras)")
+    parser.add_argument("--width", type=int,
+                        help="Reference render width (448 automatic, 1280 with clusters, 480 with custom cameras)")
     parser.add_argument("--refine", nargs="?", const=768, type=int, metavar="STEPS",
                         help="Refine scale axes, position and color after the first fit (768 extra steps)")
     parser.add_argument("--refine-wide", action="store_true",
@@ -114,7 +118,7 @@ def main():
     if args.output.exists() and not args.force:
         parser.error("Output exists. Use --force to replace it.")
     steps = args.steps if args.steps is not None else (320 if args.cameras else 512)
-    width = args.width if args.width is not None else (480 if args.cameras else 448)
+    width = args.width if args.width is not None else (1280 if args.clusters else 480 if args.cameras else 448)
     if args.fit_sort_order:
         args.finish_footprints = True
     if args.finish_footprints:
@@ -132,10 +136,15 @@ def main():
         opacity = model[3]
         log_size = np.zeros_like(opacity)
         if not args.attributes_only:
-            from fit_splats import auto_cameras, fit, validate_cameras
-            cameras = validate_cameras(json.loads(args.cameras.read_text())) if args.cameras else auto_cameras(model)
+            from fit_splats import auto_cameras, cluster_cameras, fit, validate_cameras
+            if args.clusters:
+                cameras = cluster_cameras(args.clusters, len(opacity))
+            elif args.cameras:
+                cameras = validate_cameras(json.loads(args.cameras.read_text()))
+            else:
+                cameras = auto_cameras(model)
             log_size, opacity = fit(model, cameras, steps, width)
-            if args.cameras is None:
+            if args.cameras is None and args.clusters is None:
                 # Automatic views may miss parts of the scan. Keep some of the original
                 # appearance in the fitted output to limit regressions on unseen views.
                 log_size *= .8

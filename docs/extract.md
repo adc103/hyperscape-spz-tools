@@ -58,6 +58,22 @@ curl.exe -L "PASTE_CDN_URL_HERE" -o scan.spz
 
 Open `scan.spz` in either viewer.
 
+## 5. Get the cluster file (for converting)
+
+The app saves the spots it places you in. The converter uses them to fit a closer PLY. Once you have opened the scan in step 1, list the app's files:
+
+```powershell
+.\adb shell ls /sdcard/Android/data/com.meta.HyperscapeHmdCapture/files/
+```
+
+Find the folder named `<scan id>_visibility_clusters` and pull its centroids:
+
+```powershell
+.\adb pull /sdcard/Android/data/com.meta.HyperscapeHmdCapture/files/SCAN_ID_visibility_clusters/cluster_centroids.json
+```
+
+Pass it to the converter with `--clusters cluster_centroids.json`. See [conversion](conversion.md).
+
 ## Notes
 
 - The token expires. If downloads fail, redo steps 1 and 2 for a fresh one.

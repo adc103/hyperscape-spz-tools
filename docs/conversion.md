@@ -11,6 +11,29 @@ python -m pip install numpy scipy
 python tools/convert_spz.py scan.spz scan.ply
 ```
 
+## Fit from the app's viewpoints
+
+For the closest match, give the converter the app's cluster file. See [extraction step 5](extract.md#5-get-the-cluster-file-for-converting) to get it.
+
+```sh
+python tools/convert_spz.py scan.spz scan.ply --clusters cluster_centroids.json
+```
+
+The app saves one centroid per visibility cluster, at standing eye height. These are the spots it places you in. The converter fits four headings from each one, renders references at 1280 px, and keeps the full fitted result. It works with every pass below, for example `--clusters cluster_centroids.json --fit-sort-order`.
+
+Measured on one room scan against native RayQuadratic renders, in PSNR (higher is closer). The scored views are 64 views at 1280 px from cluster positions the fit did not use. For this test the fit used the other half of the centroids. The converter uses all of them.
+
+| Export | Depth order | Distance order |
+|---|---|---|
+| `--attributes-only` | 28.6 dB | 29.7 dB |
+| Automatic cameras, `--fit-sort-order` | 34.2 dB | 35.2 dB |
+| `--clusters`, first fit only | 35.0 dB | 36.7 dB |
+| `--clusters --fit-sort-order` | 39.1 dB | 40.1 dB |
+
+Distance order matches the app more closely in every case, so use it in viewers that let you choose. The full chain at 1280 px took about 1 h 45 min on two CPU cores with 128 views. The converter fits all centroids, so expect a longer run. Use `--width` to trade detail for time.
+
+## Refine the fit
+
 For a closer match, run the refinement pass:
 
 ```sh
@@ -61,11 +84,11 @@ This adds a pass after `--finish-footprints` that fits scale, opacity, and color
 
 ## Set custom camera views
 
-By default the converter samples camera positions on the inferred floor and renders up to 64 views at different headings, heights, and fields of view. A second sweep gives less densely scanned areas more coverage. The automatic fit keeps some of the original scale and opacity to limit changes in areas the sampled views miss. For scans that cover multiple levels or have unreliable floor estimates, supply a JSON array of cameras with `--cameras cameras.json`. Each row contains `[x, y, z, yaw, pitch, horizontal_fov, roll]` in the source scan's Z-up coordinates. Use degrees for angles. Include views from different positions and distances for the areas that matter.
+By default the converter samples camera positions on the inferred floor and renders up to 64 views at different headings, heights, and fields of view. A second sweep gives less densely scanned areas more coverage. The automatic fit keeps some of the original scale and opacity to limit changes in areas the sampled views miss. For scans that cover multiple levels or have unreliable floor estimates, use `--clusters` or supply a JSON array of cameras with `--cameras cameras.json`. Each row contains `[x, y, z, yaw, pitch, horizontal_fov, roll]` in the source scan's Z-up coordinates. Use degrees for angles. Include views from different positions and distances for the areas that matter.
 
 `--steps` controls the number of fitting updates and `--width` controls the reference render width. Larger values take more CPU time. The output keeps its original SH degree at every setting.
 
-The automatic fit defaults to `--width 448 --steps 512`.
+The automatic fit defaults to `--width 448 --steps 512`. With `--clusters` the defaults are `--width 1280 --steps 512`.
 
 ## Compare draw orders in the browser
 

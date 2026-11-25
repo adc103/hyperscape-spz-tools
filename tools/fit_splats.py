@@ -1,5 +1,6 @@
 """Fit standard splats to RayQuadratic views using a CPU rasterizer."""
 import ctypes as ct
+import json
 import os
 from pathlib import Path
 import shlex
@@ -41,6 +42,27 @@ def validate_cameras(cameras):
     if not np.isfinite(values).all() or np.any((values[:, 5] < 20) | (values[:, 5] > 130)):
         raise ValueError("Camera values must be finite and horizontal FOV must be 20–130 degrees")
     return values
+
+
+def cluster_cameras(path, splat_count, headings=4):
+    """Build fitting views from the app's visibility cluster centroids.
+
+    The app writes one centroid per visibility cluster at standing eye height. Each one
+    becomes `headings` evenly spaced views with a slight downward pitch.
+    """
+    data = json.loads(Path(path).read_text())
+    if not isinstance(data, dict) or data.get("splat_count") != splat_count:
+        raise ValueError("The cluster file does not match this scan's splat count")
+    views = np.asarray(data.get("views"), dtype="f8")
+    if views.ndim != 2 or views.shape[1] != 3 or not len(views) or not np.isfinite(views).all():
+        raise ValueError("Expected cluster centroids as [x, y, z] rows")
+    offset = np.random.default_rng(5).uniform(0, 360, len(views))
+    cameras = np.zeros((len(views), headings, 7))
+    cameras[..., :3] = views[:, None]
+    cameras[..., 3] = (offset[:, None]+np.arange(headings)*360/headings) % 360
+    cameras[..., 4] = -5
+    cameras[..., 5] = 88
+    return cameras.reshape(-1, 7)
 
 
 def auto_cameras(model):
