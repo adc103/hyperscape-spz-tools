@@ -42,6 +42,14 @@ Invoke-RestMethod -Uri "https://graph.oculus.com/graphql/" -Method Post -Body $b
 
 Open `captures.json`, find your scan, and copy the `cdn_url` under its `gsplat_model`.
 
+The `doc_id` above is the app's "list my captures" query. It is the same for everyone on a given app version, so it is safe to reuse. If Meta updates the app it can change, in which case find the current one yourself:
+
+```powershell
+Select-String -Path hs.log -Pattern "doc_id|doc id"
+```
+
+Several show up. The one you want is paired with the captures response, the request whose reply lists your scans and their `cdn_url`s.
+
 ## 4. Download it
 
 ```powershell
