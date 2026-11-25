@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gaussian PLY viewer</title>
+<link rel="stylesheet" href="ply.css">
+<script type="module" src="ply-viewer.js"></script>
+</head>
+<body>
+<header>
+  <div><a href="../index.html">Hyperscape SPZ tools</a><h1>Gaussian PLY viewer</h1></div>
+  <div class="controls">
+    <label class="button">Open PLY<input id="file" type="file" accept=".ply" class="visually-hidden"></label>
+    <label class="button secondary">Load camera<input id="camera" type="file" accept=".json" class="visually-hidden"></label>
+    <label class="sort">Draw order <select id="sort"><option value="distance">Distance</option><option value="depth">Depth</option></select></label>
+  </div>
+</header>
+<main>
+  <div class="viewport">
+    <canvas id="view" tabindex="0" aria-label="Gaussian splat view"></canvas>
+    <div id="empty">Choose a Gaussian splat PLY to open it locally.</div>
+  </div>
+  <footer><span id="status" role="status"></span><span>Drag to look. Use W A S D to move and Q or E to change height.</span></footer>
+</main>
+</body>
+</html>

@@ -67,7 +67,14 @@ By default the converter samples camera positions on the inferred floor and rend
 
 The automatic fit defaults to `--width 448 --steps 512`.
 
+## Compare draw orders in the browser
+
+Open the [PLY viewer](https://adc103.github.io/hyperscape-spz-tools/viewer/ply.html) on desktop and load a converted PLY. Use **Draw order** to switch between distance and depth at the same camera pose. Distance is the default. The viewer opens the file locally.
+
+To reproduce a converter camera, load its JSON with **Load camera**. The viewer accepts one pose or uses the first row from a pose list. The camera convention matches converter exports.
+
 ## Rendering differences
 
 The converter fits a Gaussian footprint to a quadratic footprint. Standard PLY stores one opacity per splat. RayQuadratic adjusts opacity and visibility for the current view, and blends by distance from the camera. A viewer can blend the same PLY differently depending on its sorting and filtering settings.
+
 
