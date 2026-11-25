@@ -26,6 +26,11 @@ def compile_raster(directory):
     lib.draw_native_quad.restype = None
     lib.raster_fit.argtypes = [ct.c_int, FLOAT, INT, ct.c_int, ct.c_int, FLOAT, FLOAT, ct.c_void_p, FLOAT, FLOAT, FLOAT]
     lib.raster_fit.restype = None
+    lib.raster_refine.argtypes = [
+        ct.c_int, FLOAT, ct.c_int, ct.c_int, FLOAT, ct.c_void_p, FLOAT, FLOAT,
+        ct.c_float, ct.c_float, ct.c_float, ct.c_float,
+    ]
+    lib.raster_refine.restype = None
     return lib
 
 
@@ -111,6 +116,21 @@ def sample_cameras(candidates, floor, score):
 
 
 
+def mip_filter(alpha, center, scale, focal):
+    bias = .1*np.sum(center**2, axis=1)/focal**2
+    filtered = np.sqrt(scale**2+bias[:, None])
+    whitened = center/filtered
+    magnitude = np.linalg.norm(whitened, axis=1)
+    projected_area = np.linalg.norm(center*scale[:, [1, 2, 0]]*scale[:, [2, 0, 1]], axis=1)
+    compensated = alpha*projected_area/(np.prod(filtered, axis=1)*magnitude)
+    return filtered, whitened, magnitude, compensated
+
+
+def depth_fade(opacity, depth):
+    fade = (depth > 5) & (opacity < .2)
+    return opacity*(1-np.where(fade, np.clip((depth-5)/4, 0, 1), 0))
+
+
 def render_reference(lib, model, cam, size):
     positions, scales, rotations, alpha, dc, sh = model
     w,h=size
@@ -130,11 +150,7 @@ def render_reference(lib, model, cam, size):
     scale=np.exp(scales[loc])
     focal=w/(2*np.tan(np.deg2rad(cam[5])/2))
     original_whitened_center=np.einsum('nji,nj->ni',rotation,center)
-    bias=0.1*np.sum(original_whitened_center**2,axis=1)/focal**2
-    filtered=np.sqrt(scale**2+bias[:,None])
-    whitened=original_whitened_center/filtered
-    magnitude=np.linalg.norm(whitened,axis=1)
-    compensated=alpha[loc]*np.linalg.norm(original_whitened_center*scale[:,[1,2,0]]*scale[:,[2,0,1]],axis=1)/(np.prod(filtered,axis=1)*magnitude)
+    filtered,whitened,magnitude,compensated=mip_filter(alpha[loc],original_whitened_center,scale,focal)
 
     # Build the tangent basis in the same whitened space as precomputeRayGS.
     normal=whitened/magnitude[:,None]
@@ -157,8 +173,7 @@ def render_reference(lib, model, cam, size):
     k=9-2*(4.5/255)/np.maximum(half_opacity,1e-10)
     valid=(half_opacity>=.0625)&(k>0)&(c_sq>k)
     loc,center,T,c_sq,k,half_opacity=(arr[valid] for arr in (loc,center,T,c_sq,k,half_opacity))
-    fade=(center[:,2]>5)&(half_opacity<.2)
-    opacity=half_opacity*(1-np.where(fade,np.clip((center[:,2]-5)/4,0,1),0))
+    opacity=depth_fade(half_opacity,center[:,2])
     valid=(opacity>=.0625)&(np.linalg.det(T)!=0)
     loc,center,T,c_sq,k,opacity=(arr[valid] for arr in (loc,center,T,c_sq,k,opacity))
     support=np.sqrt(k*c_sq/(c_sq-k))
@@ -181,7 +196,7 @@ def render_reference(lib, model, cam, size):
     return image
 
 
-def prepare(model, cam, w, h):
+def prepare_projection(model, cam, w, h):
     positions, scales, rotations, _, dc, sh = model
     yaw,pitch,roll=np.deg2rad(cam[[3,4,6]])
     forward=np.array([np.cos(pitch)*np.cos(yaw),np.cos(pitch)*np.sin(yaw),np.sin(pitch)])
@@ -200,8 +215,15 @@ def prepare(model, cam, w, h):
     j1=(f/z)[:,None]*(camera[:,1]-v[:,None]*camera[:,2])
     direction=direction[ids]
     funcs=basis(direction/np.linalg.norm(direction,axis=1,keepdims=True))[:, :sh.shape[2]]
-    color=np.maximum(dc[ids]*C0+.5+np.einsum("nck,nk->nc",sh[ids],funcs),0)
-    data=np.column_stack((w/2+f*u-.5,h/2+f*v-.5,np.sum(j0*j0,axis=1),np.sum(j0*j1,axis=1),np.sum(j1*j1,axis=1),color))
+    color=dc[ids]*C0+.5+np.einsum("nck,nk->nc",sh[ids],funcs)
+    screen=np.column_stack((w/2+f*u-.5,h/2+f*v-.5))
+    return screen,j0,j1,color,ids,funcs
+
+
+def prepare(model, cam, w, h):
+    screen,j0,j1,color,ids,_=prepare_projection(model,cam,w,h)
+    data=np.column_stack((screen,np.sum(j0*j0,axis=1),np.sum(j0*j1,axis=1),np.sum(j1*j1,axis=1),
+                          np.maximum(color,0)))
     return np.ascontiguousarray(data,dtype="f4"),ids
 
 
