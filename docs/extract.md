@@ -12,6 +12,32 @@ No root needed. The app downloads your scan as an SPZ, loads it, then deletes it
    .\adb devices
    ```
 
+## Quick way: export everything
+
+Copy [`tools/export_scan.ps1`](../tools/export_scan.ps1) into the platform-tools folder and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\export_scan.ps1
+```
+
+It asks you to open a scan in the headset, reads the token from the log, lists your scans, and saves the one you pick to `hyperscape_exports\<scan id>_<name>\` with a zip next to it:
+
+| File | What it is |
+|---|---|
+| `<scan id>.spz` | The splat model |
+| `scene_mesh.glb` | The scene mesh |
+| `camera_poses.json` | The capture camera path |
+| `spawn_points_2d.json` | The spawn points from the API response |
+| `od_cluster_centroids.json`, `od_cluster_masks.bin` | Visibility data from the API |
+| `device_visibility_clusters\` | `cluster_centroids.json` and `cluster_masks.bin` from the headset |
+| `thumbnail.*` | The scan thumbnail |
+| `capture_info.json` | Scan metadata, without links or the token |
+| `manifest.json` | Sizes, SHA-256 hashes, and checks that the files belong to the same scan |
+
+Options: `-CaptureId <id>` picks a scan, `-All` exports every scan, `-IncludeVideos` adds the flyby videos, and `-NoZip` skips the zip. The token is never saved.
+
+The steps below do the same thing by hand.
+
 ## 1. Log while you open the scan
 
 ```powershell
@@ -57,6 +83,15 @@ curl.exe -L "PASTE_CDN_URL_HERE" -o scan.spz
 ```
 
 Open `scan.spz` in either viewer.
+
+The same scan entry in `captures.json` links the scene mesh and camera poses. Copy the `cdn_url` under `scene_mesh` and under `camera_poses`:
+
+```powershell
+curl.exe -L "PASTE_SCENE_MESH_URL" -o scene_mesh.glb
+curl.exe -L "PASTE_CAMERA_POSES_URL" -o camera_poses.json
+```
+
+The spawn points have no link. They sit in the scan entry as `spawn_points_2d`, five `x`, `y` pairs in scan coordinates with no height.
 
 ## 5. Get the cluster file (for converting)
 
