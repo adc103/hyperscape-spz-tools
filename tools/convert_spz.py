@@ -105,6 +105,8 @@ def main():
                         help="Reduce spill at edges by replacing selected large, flat splats")
     parser.add_argument("--finish-footprints", action="store_true",
                         help="Split wide footprints, then refit their scale and opacity against rendered views")
+    parser.add_argument("--fit-sort-order", action="store_true",
+                        help="Refit order-sensitive coverage and color for depth and distance sorting")
     parser.add_argument("--force", action="store_true", help="Replace an existing output")
     args = parser.parse_args()
     if args.output.resolve() == args.input.resolve():
@@ -113,6 +115,8 @@ def main():
         parser.error("Output exists. Use --force to replace it.")
     steps = args.steps if args.steps is not None else (320 if args.cameras else 512)
     width = args.width if args.width is not None else (480 if args.cameras else 448)
+    if args.fit_sort_order:
+        args.finish_footprints = True
     if args.finish_footprints:
         args.split_footprints = True
     if args.split_footprints:
@@ -149,6 +153,9 @@ def main():
                 if args.finish_footprints:
                     from finish_footprints import finish_footprints
                     refined = finish_footprints(model, *refined, cameras, wide_width)
+                if args.fit_sort_order:
+                    from fit_sort_order import fit_sort_order
+                    refined = fit_sort_order(model, *refined, cameras, wide_width)
                 model, log_size, opacity = refined
         write_ply(args.output, model, log_size, opacity, args.force)
     except (OSError, EOFError, ValueError, subprocess.CalledProcessError, np.linalg.LinAlgError) as error:
