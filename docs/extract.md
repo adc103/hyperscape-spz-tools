@@ -1,8 +1,18 @@
-# Extract an SPZ from Quest 3
+# Export a Hyperscape capture from Quest 3
+
+Install PowerShell 7 and ADB on Windows, macOS, or Linux. Enable Developer Mode, connect the Quest over USB, and accept the debugging prompt. Put ADB on your PATH or pass its location with `-Adb`.
+
+```sh
+pwsh -File ./export_scan.ps1
+```
+
+Open a scan on the headset when prompted, then choose a capture. The ZIP contains the SPZ, scene mesh, centroids, and visibility masks. Camera poses and spawn points are included when available. Use `-OutDir` to choose where to save it.
+
+## Manual SPZ extraction
 
 No root needed. The app downloads your scan as an SPZ, loads it, then deletes it. You grab it by asking Meta's API for the download link.
 
-## Setup
+### Setup
 
 1. Turn on Developer Mode in the Meta Horizon phone app, under your headset's settings.
 2. Download [ADB / Platform Tools](https://developer.android.com/tools/releases/platform-tools) and unzip it.
@@ -12,7 +22,7 @@ No root needed. The app downloads your scan as an SPZ, loads it, then deletes it
    .\adb devices
    ```
 
-## 1. Log while you open the scan
+### 1. Log while you open the scan
 
 ```powershell
 .\adb logcat -c
@@ -21,7 +31,7 @@ No root needed. The app downloads your scan as an SPZ, loads it, then deletes it
 
 Leave that running. Open the Hyperscape app and open your scan. Once it loads, press Ctrl+C.
 
-## 2. Get your token
+### 2. Get your token
 
 ```powershell
 Select-String -Path hs.log -Pattern "Access token:"
@@ -33,7 +43,7 @@ Copy the `FRL...` token and set it:
 $T = "PASTE_TOKEN_HERE"
 ```
 
-## 3. Ask the API for your scans
+### 3. Ask the API for your scans
 
 ```powershell
 $body = @{ doc_id = "26355098974169409"; variables = "{}"; method = "post"; format = "json" }
@@ -50,7 +60,7 @@ Select-String -Path hs.log -Pattern "doc_id|doc id"
 
 Several show up. The one you want is paired with the captures response, the request whose reply lists your scans and their `cdn_url`s.
 
-## 4. Download it
+### 4. Download it
 
 ```powershell
 curl.exe -L "PASTE_CDN_URL_HERE" -o scan.spz
@@ -58,7 +68,7 @@ curl.exe -L "PASTE_CDN_URL_HERE" -o scan.spz
 
 Open `scan.spz` in either viewer.
 
-## 5. Get the cluster file (for converting)
+### 5. Get the cluster file (for converting)
 
 The app saves the spots it places you in. The converter uses them to fit a closer PLY. Once you have opened the scan in step 1, list the app's files:
 
@@ -74,7 +84,7 @@ Find the folder named `<scan id>_visibility_clusters` and pull its centroids:
 
 Pass it to the converter with `--clusters cluster_centroids.json`. See [conversion](conversion.md).
 
-## Notes
+### Notes
 
 - The token expires. If downloads fail, redo steps 1 and 2 for a fresh one.
 - The CDN links also expire, so download soon after step 3.
