@@ -101,6 +101,8 @@ def main():
                         help="Refine scale axes, position and color after the first fit (768 extra steps)")
     parser.add_argument("--refine-wide", action="store_true",
                         help="Blend refinement with a wider camera sweep and estimated native opacity")
+    parser.add_argument("--split-footprints", action="store_true",
+                        help="Reduce spill at edges by replacing selected large, flat splats")
     parser.add_argument("--force", action="store_true", help="Replace an existing output")
     args = parser.parse_args()
     if args.output.resolve() == args.input.resolve():
@@ -109,6 +111,8 @@ def main():
         parser.error("Output exists. Use --force to replace it.")
     steps = args.steps if args.steps is not None else (320 if args.cameras else 512)
     width = args.width if args.width is not None else (480 if args.cameras else 448)
+    if args.split_footprints:
+        args.refine_wide = True
     if args.refine_wide and args.refine is None:
         args.refine = 768
     if args.refine is not None and (args.attributes_only or args.refine < 1):
@@ -135,6 +139,9 @@ def main():
                     wide_width = min(1920, round(width*8/7))
                     wide = refine(model, cameras, log_size, opacity, round(args.refine*1.5), wide_width, wide=True)
                     refined = blend_refinements(refined, wide)
+                if args.split_footprints:
+                    from split_footprints import split_footprints
+                    refined = split_footprints(model, *refined, cameras)
                 model, log_size, opacity = refined
         write_ply(args.output, model, log_size, opacity, args.force)
     except (OSError, EOFError, ValueError, subprocess.CalledProcessError, np.linalg.LinAlgError) as error:

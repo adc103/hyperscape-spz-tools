@@ -131,7 +131,7 @@ def depth_fade(opacity, depth):
     return opacity*(1-np.where(fade, np.clip((depth-5)/4, 0, 1), 0))
 
 
-def render_reference(lib, model, cam, size):
+def prepare_reference(model, cam, size):
     positions, scales, rotations, alpha, dc, sh = model
     w,h=size
     eye=cam[:3]
@@ -190,6 +190,12 @@ def render_reference(lib, model, cam, size):
     rgb=np.maximum(dc[loc]*C0+.5+np.einsum('nck,nk->nc',sh[loc],functions),0)
     rgb=rgb.astype('f2').astype('f4')
     packed=np.ascontiguousarray(np.column_stack((low[:,0],high[:,0],low[:,1],high[:,1],opacity,rgb,np.linalg.inv(T).reshape(-1,9),support,1/c_sq)),dtype='f4')
+    return packed,loc,focal
+
+
+def render_reference(lib, model, cam, size):
+    packed,_,focal=prepare_reference(model,cam,size)
+    w,h=size
     image=np.zeros((h,w,4),dtype='f4');image[:,:,3]=1
     lib.draw_native_quad(len(packed),packed,w,h,focal,image)
     np.clip(image[:,:,:3],0,1,out=image[:,:,:3])
