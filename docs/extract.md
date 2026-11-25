@@ -40,7 +40,7 @@ $body = @{ doc_id = "26355098974169409"; variables = "{}"; method = "post"; form
 Invoke-RestMethod -Uri "https://graph.oculus.com/graphql/" -Method Post -Body $body -Headers @{ Authorization = "OAuth $T" } | ConvertTo-Json -Depth 20 > captures.json
 ```
 
-Open `captures.json`, find your scan, and copy the `cdn_url` under its `gsplat_model`.
+Open `captures.json`, find your scan, and copy the `cdn_url` under its `gsplat_model_od_spz`. The plain `gsplat_model` entry only has an `id` and no download link.
 
 The `doc_id` above is the app's "list my captures" query. It is the same for everyone on a given app version, so it is safe to reuse. If Meta updates the app it can change, in which case find the current one yourself:
 
