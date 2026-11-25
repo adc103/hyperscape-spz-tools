@@ -43,6 +43,14 @@ python tools/convert_spz.py scan.spz decoded.ply --attributes-only
 
 `--attributes-only` writes the decoded splat parameters directly and needs no C++ compiler. Use it to compare the decoded and fitted results.
 
+## Run the final footprint fit
+
+```sh
+python tools/convert_spz.py scan.spz finished.ply --finish-footprints
+```
+
+This runs the split-footprint workflow, then fits scale and opacity with the new splat groups in place. The extra 320 updates leave positions, rotations, colors, and splat count as they were after splitting. It takes longer and individual views can still favor the original split fit.
+
 ## Set custom camera views
 
 By default the converter samples camera positions on the inferred floor and renders up to 64 views at different headings, heights, and fields of view. A second sweep gives less densely scanned areas more coverage. The automatic fit keeps some of the original scale and opacity to limit changes in areas the sampled views miss. For scans that cover multiple levels or have unreliable floor estimates, supply a JSON array of cameras with `--cameras cameras.json`. Each row contains `[x, y, z, yaw, pitch, horizontal_fov, roll]` in the source scan's Z-up coordinates. Use degrees for angles. Include views from different positions and distances for the areas that matter.
@@ -54,3 +62,4 @@ The automatic fit defaults to `--width 448 --steps 512`.
 ## Rendering differences
 
 The converter fits a Gaussian footprint to a quadratic footprint. Standard PLY stores one opacity per splat. RayQuadratic adjusts opacity and visibility for the current view, and blends by distance from the camera. A viewer can blend the same PLY differently depending on its sorting and filtering settings.
+
