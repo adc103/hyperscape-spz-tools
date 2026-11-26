@@ -1,8 +1,9 @@
 """Refine scale and opacity of the final splats against source renders."""
-from pathlib import Path
 import tempfile
 
 import numpy as np
+
+from view_cache import ViewCache
 from scipy.spatial.transform import Rotation
 
 from fit_splats import compile_raster, render_reference
@@ -34,31 +35,40 @@ def finish_footprints(source, fitted, log_size, opacity, cameras, width):
 
     with tempfile.TemporaryDirectory(prefix="hyperscape-finish-") as scratch:
         lib = compile_raster(scratch)
-        paths = []
-        for i, camera in enumerate(cameras):
-            frame_width = max(128, round(width*13/16)) if i % 2 else width
+        def prepare_view(index):
+            camera = cameras[index]
+            frame_width = max(128, round(width*13/16)) if index % 2 else width
             frame_height = round(frame_width*9/16)
             data, ids, _ = refine_projection(student, camera, frame_width, frame_height)
-            if not len(ids):
-                continue
-            target = render_reference(lib, teacher, camera, (frame_width, frame_height))
-            if np.any(target[:, :, :3]):
-                path = Path(scratch)/f"{i}.npz"
-                np.savez(path, data=data, ids=ids, target=target)
-                paths.append(path)
-        if not paths:
+            target = render_reference(lib, teacher, camera, (frame_width, frame_height)) if len(ids) else None
+            radial = np.argsort(np.sum((student[0][ids]-camera[:3])**2, axis=1), kind="stable")
+            return dict(data=data, ids=ids, target=target, radial=radial)
+
+        cache = ViewCache(scratch, prepare_view)
+        view_indices = []
+        for i in range(len(cameras)):
+            view = prepare_view(i)
+            if view["target"] is not None and np.any(view["target"][:, :, :3]):
+                cache.store(i, view)
+                view_indices.append(i)
+        if not view_indices:
             return fitted, log_size, opacity
 
         rng = np.random.default_rng(218)
         for step in range(steps):
-            if step % len(paths) == 0:
-                order = rng.permutation(len(paths))
-            with np.load(paths[order[step % len(paths)]]) as view:
-                data, ids, target = view["data"], view["ids"], view["target"]
+            if step % len(view_indices) == 0:
+                order = rng.permutation(len(view_indices))
+            view = cache.load(view_indices[order[step % len(view_indices)]])
+            data, ids, target = view["data"], view["ids"], view["target"]
             frame_height, frame_width = target.shape[:2]
             params = np.zeros((len(ids), 10), dtype="f4")
             params[:, :4] = current[ids]
             _, gradient = render_refined(lib, data, params, frame_width, frame_height, target)
+            radial = view["radial"]
+            if np.any(radial[1:] < radial[:-1]):
+                _, radial_gradient = render_refined(lib, data[radial], params[radial],
+                                                   frame_width, frame_height, target)
+                gradient[radial] = .65*gradient[radial]+.35*radial_gradient
             values = params[:, :4]
             delta = gradient[:, :4]+regularization*(values-prior[ids])
             observations[ids] += 1

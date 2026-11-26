@@ -15,13 +15,13 @@
         <button id="reset">Reset view</button>
         <button id="enterVr" disabled>Enter VR</button>
     </div>
-    <input id="file" type="file" accept=".spz" hidden>
+    <input id="file" type="file" accept=".spz,.zip" hidden>
     <p id="status" role="status">Files stay on this device.</p>
     <p id="xrStatus" role="status">Checking WebXR support…</p>
 </header>
 <main id="viewport" aria-label="Scan view">
     <canvas id="view" tabindex="0" aria-label="3D scene. Drag to look and use WASD to move."></canvas>
-    <div id="empty">Drop an SPZ file here.</div>
+    <div id="empty">Drop an export ZIP or SPZ here.</div>
     <p id="stats" hidden></p>
 </main>
 <aside class="settings-panel" aria-label="Viewer settings">
@@ -61,13 +61,15 @@
         <p class="hint"><a href="https://github.com/adc103/hyperscape-spz-tools/blob/main/docs/viewers.md#frame-json">Frame JSON format</a>. Camera calibration and depth images apply to the preview.</p>
     </details>
 </aside>
+<script src="scene-bundle.js"></script>
+<script src="visibility.js"></script>
 <script src="format.js"></script>
 <script src="shaders.js?v=6"></script>
 <script src="render.js"></script>
 <script src="frame.js"></script>
 <script src="app.js"></script>
 <script src="webgpu.js?v=6"></script>
-<script src="navigation.js?v=6"></script>
-<script src="xr.js?v=6"></script>
+<script src="navigation.js?v=7"></script>
+<script src="xr.js?v=7"></script>
 </body>
 </html>

@@ -1,8 +1,8 @@
 'use strict';
 
-importScripts('navigation.js?v=6');
+importScripts('navigation.js?v=7','visibility.js');
 
-let points, ids, scratch, keys;
+let points, ids, scratch, keys, visibility;
 const bins=new Uint32Array(256);
 const float=new Float32Array(1);
 const bits=new Uint32Array(float.buffer);
@@ -26,10 +26,11 @@ function sort({eyes,center,detail,lod,quality,narrow,front,cap},output) {
     const left=frustum(first), right=second===first?left:frustum(second);
     const [ex,ey,ez]=first.pos,[sx,sy,sz]=second.pos,[mx,my,mz]=center;
     const count=points.length/4;
+    const cluster=visibilityOffset(visibility,center,count);
     let seen=0;
     for(let i=0;i<count&&seen<cap;i++) {
         const j=i*4;
-        if(points[j+3]<.0625) continue;
+        if(points[j+3]<.0625||!visibleInCluster(visibility,cluster,i)) continue;
         const x=points[j],y=points[j+1],z=points[j+2];
         const ax=x-ex,ay=y-ey,az=z-ez;
         const nearDistance=ax*ax+ay*ay+az*az;
@@ -76,6 +77,7 @@ function sort({eyes,center,detail,lod,quality,narrow,front,cap},output) {
 self.onmessage=({data})=>{
     if(data.points) {
         points=data.points;
+        visibility=data.visibility;
         const size=points.length/4;
         ids=new Uint32Array(size);
         scratch=new Uint32Array(size);

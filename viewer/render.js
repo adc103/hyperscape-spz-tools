@@ -120,10 +120,11 @@ function sortVisible(eyes,center,uploadToGl=true) {
     const [ex,ey,ez]=first.pos,[sx,sy,sz]=second.pos;
     const [mx,my,mz]=center;
     const cap=frame.maxSplats??n;
+    const cluster=visibilityOffset(model.visibility,center,n);
     let count=0;
     for(let i=0;i<n&&count<cap;++i) {
         const j=i*4;
-        if(points[j+3]<.0625) continue;
+        if(points[j+3]<.0625||!visibleInCluster(model.visibility,cluster,i)) continue;
         const px=points[j],py=points[j+1],pz=points[j+2];
         const x=px-ex,y=py-ey,z=pz-ez,ax=px-sx,ay=py-sy,az=pz-sz;
         if(!checkView(first,x,y,z)&&(first===second||!checkView(second,ax,ay,az))) continue;

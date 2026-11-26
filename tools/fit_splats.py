@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 
 import numpy as np
+
+from view_cache import ViewCache
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
@@ -269,15 +271,19 @@ def fit(model, cameras, steps, width):
     height = round(width*9/16)
     with tempfile.TemporaryDirectory(prefix="hyperscape-fit-") as scratch:
         lib = compile_raster(scratch)
+        def prepare_view(index):
+            camera = cameras[index]
+            data, ids = prepare(model, camera, width, height)
+            target = render_reference(lib, model, camera, (width, height))
+            return dict(data=data, ids=ids, target=target)
+
+        cache = ViewCache(scratch, prepare_view)
         prepared = []
-        # Cycle through views so memory depends on the viewport and the visible count.
-        for i, camera in enumerate(cameras):
-            data, ids = prepare(model,camera,width,height)
-            target = render_reference(lib,model,camera,(width,height))
-            if ids.size and np.any(target[:, :, :3]):
-                path = Path(scratch)/f"view-{i}.npz"
-                np.savez(path, data=data, ids=ids, target=target)
-                prepared.append(path)
+        for i in range(len(cameras)):
+            view = prepare_view(i)
+            if view["ids"].size and np.any(view["target"][:, :, :3]):
+                cache.store(i, view)
+                prepared.append(i)
         if not prepared:
             raise ValueError("The selected cameras did not see the scan")
         print(f"Fitting {len(prepared)} camera views", flush=True)
@@ -287,10 +293,10 @@ def fit(model, cameras, steps, width):
         gs,ga = np.zeros_like(alpha),np.zeros_like(alpha)
         state = [(np.zeros_like(alpha),np.zeros_like(alpha)) for _ in range(2)]
         for step in range(steps):
-            with np.load(view_order[step%len(view_order)]) as data:
-                gs.fill(0)
-                ga.fill(0)
-                render(lib,data["data"],data["ids"],width,height,log_size,opacity,data["target"],gs,ga)
+            data = cache.load(view_order[step % len(view_order)])
+            gs.fill(0)
+            ga.fill(0)
+            render(lib,data["data"],data["ids"],width,height,log_size,opacity,data["target"],gs,ga)
             rate = .019 if step < steps*4/7 else .009
             for param,grad,center,(m,v),lower,upper in [
                 (log_size,gs,0,state[0],-.5,.5), (opacity,ga,alpha,state[1],0,1)

@@ -1,8 +1,9 @@
 """Refit a portable 3DGS model to RayQuadratic images from multiple viewpoints."""
-from pathlib import Path
 import tempfile
 
 import numpy as np
+
+from view_cache import ViewCache
 from scipy.spatial.transform import Rotation
 
 from convert_spz import C0
@@ -83,25 +84,32 @@ def refine(model, cameras, log_size, opacity, steps, width, wide=False):
 
     with tempfile.TemporaryDirectory(prefix="hyperscape-refine-") as scratch:
         lib = compile_raster(scratch)
-        paths = []
-        for i, camera in enumerate(cameras):
-            frame_width = max(128, round(width*5/8)) if wide and i % 2 else width
+        def prepare_view(index):
+            camera = cameras[index]
+            frame_width = max(128, round(width*5/8)) if wide and index % 2 else width
             frame_height = round(frame_width*9/16)
             data, ids, harmonics = refine_projection(reference, camera, frame_width, frame_height)
-            if not len(ids):
+            target = render_reference(lib, reference, camera, (frame_width, frame_height)) if len(ids) else None
+            return dict(data=data, ids=ids, harmonics=harmonics, target=target)
+
+        cache = ViewCache(scratch, prepare_view)
+        view_indices = []
+        for i, camera in enumerate(cameras):
+            view = prepare_view(i)
+            data, ids, target = view["data"], view["ids"], view["target"]
+            if target is None:
                 continue
-            target = render_reference(lib, reference, camera, (frame_width, frame_height))
             if wide:
+                frame_height, frame_width = target.shape[:2]
                 x, y = data[:, :2].T
                 on_screen = (x >= 0) & (x < frame_width) & (y >= 0) & (y < frame_height)
                 visible_ids = ids[on_screen]
                 exposure[visible_ids] += 1
                 opacity_sum[visible_ids] += reference_opacity(reference, camera, visible_ids, frame_width)
             if np.any(target[:, :, :3]):
-                path = Path(scratch)/f"view-{i}.npz"
-                np.savez(path, data=data, ids=ids, harmonics=harmonics, target=target)
-                paths.append(path)
-        if not paths:
+                cache.store(i, view)
+                view_indices.append(i)
+        if not view_indices:
             raise ValueError("The selected cameras did not see the scan")
         if wide:
             seen = exposure > 0
@@ -109,15 +117,15 @@ def refine(model, cameras, log_size, opacity, steps, width, wide=False):
             params[seen, 3] = .30*params[seen, 3]+.70*native_alpha
             params[seen, :3] = np.clip(params[seen, :3]+.10, -1.25, .85)
         prior = params.copy()
-        print(f"Refining {len(paths)} camera views", flush=True)
+        print(f"Refining {len(view_indices)} camera views", flush=True)
         rng = np.random.default_rng(716)
         for step in range(steps):
-            if step % len(paths) == 0:
-                order = rng.permutation(paths)
-            with np.load(order[step % len(paths)]) as view:
-                ids, data, target = view["ids"], view["data"], view["target"]
-                functions = np.ones((len(ids), terms), dtype="f4")
-                functions[:, 1:] = view["harmonics"]
+            if step % len(view_indices) == 0:
+                order = rng.permutation(view_indices)
+            view = cache.load(order[step % len(view_indices)])
+            ids, data, target = view["ids"], view["data"], view["target"]
+            functions = np.ones((len(ids), terms), dtype="f4")
+            functions[:, 1:] = view["harmonics"]
             current = np.empty((len(ids), 10), dtype="f4")
             current[:, :7] = params[ids]
             current[:, 7:] = np.einsum("nct,nt->nc", color[ids], functions)

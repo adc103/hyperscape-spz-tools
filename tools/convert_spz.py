@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from zipfile import BadZipFile
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -91,8 +92,8 @@ def write_ply(output, model, log_size, opacity, overwrite=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", type=Path)
-    parser.add_argument("output", type=Path)
+    parser.add_argument("input", type=Path, help="SPZ file, export folder, or export ZIP")
+    parser.add_argument("output", type=Path, nargs="?", help="PLY path (defaults to the SPZ name with .ply)")
     parser.add_argument("--attributes-only", action="store_true", help="Decode attributes without refitting appearance")
     views = parser.add_mutually_exclusive_group()
     views.add_argument("--clusters", type=Path,
@@ -113,12 +114,30 @@ def main():
                         help="Refit order-sensitive coverage and color for depth and distance sorting")
     parser.add_argument("--force", action="store_true", help="Replace an existing output")
     args = parser.parse_args()
-    if args.output.resolve() == args.input.resolve():
-        parser.error("Input and output must be different files")
+    from export_bundle import open_bundle
+
+    try:
+        with open_bundle(args.input) as (scan, folder):
+            convert(args, scan, folder)
+    except (OSError, EOFError, ValueError, BadZipFile, subprocess.CalledProcessError, np.linalg.LinAlgError) as error:
+        parser.exit(1, f"{error}\n")
+
+
+def convert(args, scan, folder):
+    from export_bundle import bundle_centroids, read_visibility
+
+    if folder is not None and not args.attributes_only and args.cameras is None and args.clusters is None:
+        args.clusters = bundle_centroids(folder)
+    if args.output is None:
+        args.output = args.input.with_suffix(".ply") if args.input.suffix.lower() == ".zip" else scan.with_suffix(".ply")
+    if args.output.resolve() in (scan.resolve(), args.input.resolve()):
+        raise ValueError("Input and output must be different files")
     if args.output.exists() and not args.force:
-        parser.error("Output exists. Use --force to replace it.")
+        raise ValueError("Output exists. Use --force to replace it.")
     steps = args.steps if args.steps is not None else (320 if args.cameras else 512)
     width = args.width if args.width is not None else (1280 if args.clusters else 480 if args.cameras else 448)
+    if folder is not None and not args.attributes_only:
+        args.fit_sort_order = True
     if args.fit_sort_order:
         args.finish_footprints = True
     if args.finish_footprints:
@@ -128,47 +147,65 @@ def main():
     if args.refine_wide and args.refine is None:
         args.refine = 768
     if args.refine is not None and (args.attributes_only or args.refine < 1):
-        parser.error("--refine needs positive steps and a fitted export")
+        raise ValueError("--refine needs positive steps and a fitted export")
     if steps < 1 or not 128 <= width <= 1920:
-        parser.error("Use positive steps and a width of 128–1920")
-    try:
-        model = decode(args.input)
-        opacity = model[3]
-        log_size = np.zeros_like(opacity)
-        if not args.attributes_only:
-            from fit_splats import auto_cameras, cluster_cameras, fit, validate_cameras
-            if args.clusters:
-                cameras = cluster_cameras(args.clusters, len(opacity))
-            elif args.cameras:
-                cameras = validate_cameras(json.loads(args.cameras.read_text()))
-            else:
-                cameras = auto_cameras(model)
-            log_size, opacity = fit(model, cameras, steps, width)
-            if args.cameras is None and args.clusters is None:
-                # Automatic views may miss parts of the scan. Keep some of the original
-                # appearance in the fitted output to limit regressions on unseen views.
-                log_size *= .8
-                opacity = model[3] + .8*(opacity-model[3])
-            if args.refine is not None:
-                from refine_splats import blend_refinements, refine
-                refined = refine(model, cameras, log_size, opacity, args.refine, width)
-                if args.refine_wide:
-                    wide_width = min(1920, round(width*8/7))
-                    wide = refine(model, cameras, log_size, opacity, round(args.refine*1.5), wide_width, wide=True)
-                    refined = blend_refinements(refined, wide)
-                if args.split_footprints:
-                    from split_footprints import split_footprints
-                    refined = split_footprints(model, *refined, cameras)
-                if args.finish_footprints:
-                    from finish_footprints import finish_footprints
-                    refined = finish_footprints(model, *refined, cameras, wide_width)
-                if args.fit_sort_order:
-                    from fit_sort_order import fit_sort_order
-                    refined = fit_sort_order(model, *refined, cameras, wide_width)
-                model, log_size, opacity = refined
-        write_ply(args.output, model, log_size, opacity, args.force)
-    except (OSError, EOFError, ValueError, subprocess.CalledProcessError, np.linalg.LinAlgError) as error:
-        parser.exit(1, f"{error}\n")
+        raise ValueError("Use positive steps and a width of 128–1920")
+    model = decode(scan)
+    opacity = model[3]
+    log_size = np.zeros_like(opacity)
+    if not args.attributes_only:
+        from fit_splats import auto_cameras, cluster_cameras, fit, validate_cameras
+        if args.clusters:
+            cameras = cluster_cameras(args.clusters, len(opacity))
+        elif args.cameras:
+            cameras = validate_cameras(json.loads(args.cameras.read_text()))
+        else:
+            cameras = auto_cameras(model)
+        log_size, opacity = fit(model, cameras, steps, width)
+        verification = None
+        if folder is not None and args.clusters is not None:
+            poses = folder / "camera_poses.json"
+            if poses.is_file():
+                from verify_fit import choose_strength
+                try:
+                    visibility = read_visibility(args.clusters, len(opacity))
+                    print("Checking coverage from captured viewpoints", flush=True)
+                    strength = choose_strength(model, log_size, opacity, poses, visibility, cameras)
+                    verification = (poses, visibility, cameras)
+                    log_size *= strength
+                    opacity = np.clip(model[3] + strength*(opacity-model[3]),0,1)
+                    print(f"Coverage fit strength: {strength:g}", flush=True)
+                except (KeyError, TypeError, ValueError) as error:
+                    print(f"Using the cluster fit: {error}", flush=True)
+        if args.cameras is None and args.clusters is None:
+            # Automatic views may miss parts of the scan. Keep some of the original
+            # appearance in the fitted output to limit regressions on unseen views.
+            log_size *= .8
+            opacity = model[3] + .8*(opacity-model[3])
+        if args.refine is not None:
+            from refine_splats import blend_refinements, refine
+            refined = refine(model, cameras, log_size, opacity, args.refine, width)
+            if args.refine_wide:
+                wide_width = min(1920, round(width*8/7))
+                wide = refine(model, cameras, log_size, opacity, round(args.refine*1.5), wide_width, wide=True)
+                refined = blend_refinements(refined, wide)
+            if args.split_footprints:
+                from split_footprints import split_footprints
+                refined = split_footprints(model, *refined, cameras)
+            if args.finish_footprints:
+                from finish_footprints import finish_footprints
+                refined = finish_footprints(model, *refined, cameras, wide_width)
+            if args.fit_sort_order:
+                from fit_sort_order import fit_sort_order
+                refined = fit_sort_order(model, *refined, cameras, wide_width)
+            if verification:
+                from verify_fit import retain_refinement
+                initial = model, log_size, opacity
+                if not retain_refinement(model, initial, refined, *verification):
+                    refined = initial
+                    print("Keeping the fit that scored better on captured views", flush=True)
+            model, log_size, opacity = refined
+    write_ply(args.output, model, log_size, opacity, args.force)
     print(f"Wrote {len(opacity):,} standard Gaussians to {args.output}")
 
 

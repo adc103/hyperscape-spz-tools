@@ -8,8 +8,10 @@ Use Python 3 with NumPy and SciPy, and a C++ compiler. The fit runs on the CPU a
 
 ```sh
 python -m pip install numpy scipy
-python tools/convert_spz.py scan.spz scan.ply
+python tools/convert_spz.py capture.zip
 ```
+
+The capture ZIP uses its centroids for fitting and writes the PLY next to the ZIP. When present, recorded poses and visibility masks help validate the fit. Validation checks both full frames and the worst image patches. The footprint refinement also checks both depth and distance draw order. The temporary view cache is limited to 256 MiB per pass. The converter re-renders views beyond that limit.
 
 ## Fit from the app's viewpoints
 

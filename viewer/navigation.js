@@ -244,3 +244,16 @@ function teleportArcLanding(nav,head,arc,visible) {
     }
     return null;
 }
+
+function meshTeleportLanding(mesh,head,arc,visible) {
+    if (!arc || mesh.raycast(head,arc[0])) return null;
+    visible?.push(arc[0]);
+    for (let i=1;i<arc.length;i++) {
+        const hit=mesh.raycast(arc[i-1],arc[i]);
+        if (!hit) {visible?.push(arc[i]);continue;}
+        const target=hit.normal[2]>=.5 ? mesh.landing(hit.point) : null;
+        visible?.push(target??hit.point);
+        return target;
+    }
+    return null;
+}
