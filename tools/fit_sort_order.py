@@ -1,8 +1,9 @@
 """Reduce the visual changes caused by choosing a different splat draw order."""
-from pathlib import Path
 import tempfile
 
 import numpy as np
+
+from view_cache import ViewCache
 
 from convert_spz import C0, basis
 from finish_footprints import camera_model
@@ -62,7 +63,7 @@ def sort_gradient(lib, data, params, order, target):
     return gradient
 
 
-def optimize(lib, paths, points, opacity, selected, terms):
+def optimize(lib, cache, count, points, opacity, selected, terms):
     lut = np.full(len(opacity), -1, dtype="i4")
     lut[selected] = np.arange(len(selected))
     params = np.zeros((len(selected), 4), dtype="f4")
@@ -75,10 +76,11 @@ def optimize(lib, paths, points, opacity, selected, terms):
     rng = np.random.default_rng(11030)
     steps = 320
     for step in range(steps):
-        if step % len(paths) == 0:
-            sequence = rng.permutation(paths)
-        with np.load(sequence[step % len(paths)]) as item:
-            data, ids, targets, order, eye = (item[key] for key in ("data", "ids", "target", "order", "eye"))
+        if step % count == 0:
+            sequence = rng.permutation(count)
+        index = sequence[step % count]
+        item = cache.load(index)
+        data, ids, targets, order, eye = (item[key] for key in ("data", "ids", "target", "order", "eye"))
         active = lut[ids] >= 0
         rows = lut[ids[active]]
         if not len(rows):
@@ -127,17 +129,20 @@ def fit_sort_order(source, fitted, log_size, opacity, cameras, width):
         if not len(selected):
             return fitted, log_size, opacity
         print(f"Refitting {len(selected):,} order-sensitive splats", flush=True)
-        paths = []
-        for i, camera in enumerate(cameras):
-            frame_width = max(128, round(width*13/16)) if i % 2 else width
+        def prepare_view(index):
+            camera = cameras[index]
+            frame_width = max(128, round(width*13/16)) if index % 2 else width
             size = frame_width, round(frame_width*9/16)
             data, ids, _ = refine_projection(student, camera, *size)
             order = distance_order(points, ids, camera)
             target = render_reference(lib, teacher, camera, size)
-            path = Path(scratch)/f"{i}.npz"
-            np.savez(path, data=data, ids=ids, order=order, target=target, eye=camera[:3])
-            paths.append(path)
-        params, color = optimize(lib, paths, points, opacity, selected, sh.shape[2]+1)
+            return dict(data=data, ids=ids, order=order, target=target, eye=camera[:3])
+
+        cache = ViewCache(scratch, prepare_view)
+        # This stage has no per-view initialization. Render views only when
+        # the optimizer actually visits them.
+        params, color = optimize(lib, cache, len(cameras), points, opacity, selected, sh.shape[2]+1)
+
 
     # Use half the update to preserve quality with either compositor.
     result_size = np.broadcast_to(logs, scales.shape).copy()

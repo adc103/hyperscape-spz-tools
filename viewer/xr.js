@@ -45,9 +45,9 @@ function xrEye(xrView, origin, basis) {
 }
 
 function createXRSort(session,origin,onNavigation,onError) {
-    const worker=new Worker('sort-worker.js?v=6');
+    const worker=new Worker('sort-worker.js?v=7');
     const points=model.points.slice(0,model.n*4);
-    worker.postMessage({points,origin},[points.buffer]);
+    worker.postMessage({points,origin:model.meshNavigation ? null : origin,visibility:model.visibility},[points.buffer]);
     let buffer=new ArrayBuffer(model.n*4), spare=new ArrayBuffer(model.n*4), latest, last, pending=false, failure;
     worker.onmessage=({data})=>{
         if(data.nav) {onNavigation(readNavigation(data.nav,origin));return;}
@@ -74,14 +74,15 @@ function createXRSort(session,origin,onNavigation,onError) {
             front:!!frame.frontToBack,cap:Math.min(frame.maxSplats??model.n,model.n)};
         const signature=JSON.stringify(options);
         const eye=eyes[0];
-        const moved=!last||Math.hypot(center[0]-last.center[0],center[1]-last.center[1],center[2]-last.center[2])>.035||
+        const cluster=visibilityOffset(model.visibility,center,model.n);
+        const moved=!last||last.cluster!==cluster||Math.hypot(center[0]-last.center[0],center[1]-last.center[1],center[2]-last.center[2])>.035||
             dot(eye.f,last.forward)<.9986||dot(eye.right,last.right)<.9986;
         if(!pending&&(!last||(time-last.time>=24&&(moved||last.signature!==signature)))) {
             // Keep the completed result readable until this frame has uploaded it.
             const outgoing=buffer;
             const poses=eyes.map(({pos,right,down,f,tan,shift,near,far})=>({pos,right,down,f,tan,shift,near,far}));
             worker.postMessage({...options,eyes:poses,center,buffer:outgoing},[outgoing]);
-            last={time,center,forward:eye.f,right:eye.right,signature};
+            last={time,center,cluster,forward:eye.f,right:eye.right,signature};
             pending=true;
         }
         return result;
@@ -240,14 +241,15 @@ function joystick(input) {
 }
 
 function teleportAim(frame,space,input,basis,origin,head,nav) {
-    if(!nav||nav.floor===null||!input.targetRaySpace) return null;
+    if(!nav||(!nav.mesh&&nav.floor===null)||!input.targetRaySpace) return null;
     const m=frame.getPose(input.targetRaySpace,space)?.transform.matrix;
     if(!m) return null;
     const hand=toWorld(m[12],m[13],m[14],basis).map((value,i)=>value+origin[i]);
     const direction=toWorld(-m[8],-m[9],-m[10],basis);
     const stabilizer=[head[0],head[1],head[2]-.25];
     const arc=[];
-    const target=teleportArcLanding(nav,head,controllerTeleportArc(hand,direction,stabilizer),arc);
+    const trajectory=controllerTeleportArc(hand,direction,stabilizer);
+    const target=nav.mesh ? meshTeleportLanding(nav.mesh,head,trajectory,arc) : teleportArcLanding(nav,head,trajectory,arc);
     return {arc,target};
 }
 
@@ -289,8 +291,8 @@ function createLocomotion(origin,startYaw,getNavigation) {
         if(aimHeld&&left&&forward<-.25) {
             aim=teleportAim(frame,space,left,basis,origin,from,nav);
         } else if(aimHeld) {
-            const target=aim?.target;
-            if(left&&!changed&&Math.abs(forward)<.25&&target&&canReachLanding(nav,from,target)) {
+            const target=nav?.mesh&&left ? teleportAim(frame,space,left,basis,origin,from,nav)?.target : aim?.target;
+            if(left&&!changed&&Math.abs(forward)<.25&&target&&(nav.mesh||canReachLanding(nav,from,target))) {
                 origin[0]=target[0]-offset[0];
                 origin[1]=target[1]-offset[1];
                 origin[2]=target[2];
@@ -331,7 +333,7 @@ enter.onclick=async()=>{
         const scale=Number($('xrScale').value);
         const origin=[...pose.eye], startYaw=pose.yaw;
         const scanStart=[origin[0],origin[1],model.pivot[2]];
-        let navigation,navigationError;
+        let navigation=model.meshNavigation ? {mesh:model.meshNavigation} : null,navigationError;
         const sorted=createXRSort(session,scanStart,nav=>{navigation=nav;},error=>{navigationError=error;});
         const previewQuality=quality;
         drawCount=0;
@@ -378,10 +380,17 @@ enter.onclick=async()=>{
             if(!anchored) {
                 const {x,z}=head.transform.position;
                 const offset=toWorld(x,0,z,worldBasis(startYaw));
-                const [spawnX,spawnY]=navigationSpawn(navigation);
+                const spawn=navigation.mesh ? navigation.mesh.startAt(scanStart) : navigationSpawn(navigation);
+                if (!spawn) {
+                    failed=true;
+                    xrStatus.textContent='Could not find a walkable spawn on the scene mesh.';
+                    session.end().catch(()=>{});
+                    return;
+                }
+                const [spawnX,spawnY]=spawn;
                 origin[0]=spawnX-offset[0];
                 origin[1]=spawnY-offset[1];
-                origin[2]=navigation.floor??(scanStart[2]-1.6);
+                origin[2]=spawn[2]??navigation.floor??(scanStart[2]-1.6);
                 if(navigation.floor===null) xrStatus.textContent='Scan floor not found. Teleport is unavailable.';
                 anchored=true;
             }

@@ -26,15 +26,25 @@ function requestRender() {
     });
 }
 async function openScan(file) {
-    if(!file) return;
+    if(!file || immersiveRunning) return;
     const current=++generation;
     status('Decoding '+file.name+'…');
     try {
         initialize();
-        const scan=await decodeSpz(file);
+        const bundleTools=/\.zip$/i.test(file.name) ? await loadSceneBundle() : null;
+        const bundle=bundleTools ? await bundleTools.readBundle(file) : {spz:file};
+        const scan=await decodeSpz(bundle.spz);
+        scan.visibility=bundleTools?.visibilityOf(bundle,scan.n);
         if(current!==generation) return;
-        installScan(scan);
+        if (bundle.mesh && $('enterVr')) {
+            status('Building walkable surfaces…');
+            scan.meshNavigation=await bundleTools.buildMeshNavigation(bundle.mesh,bundle.spawn,scan.visibility ? bundle.clusters : undefined);
+        }
+        if(current!==generation) {scan.meshNavigation?.destroy();return;}
+        const previousMesh=model?.meshNavigation;
         upload(scan);
+        previousMesh?.destroy();
+        installScan(scan);
         model=scan;
         filename=file.name;
         quality=1;
@@ -64,9 +74,9 @@ viewport.addEventListener('dragover',event=>event.preventDefault());
 viewport.addEventListener('drop',event=>{
     event.preventDefault();
     const files=[...event.dataTransfer.files];
-    const spz=files.find(file=>/\.spz$/i.test(file.name));
+    const spz=files.find(file=>/\.(zip|spz)$/i.test(file.name));
     if(spz) openScan(spz);
-    else status('Choose a Hyperscape SPZ file.',true);
+    else status('Choose a Hyperscape export ZIP or SPZ.',true);
 });
 canvas.addEventListener('pointerdown',e=>{
     if(!model || frame.eyes || e.button!==0 || dragging) return;
