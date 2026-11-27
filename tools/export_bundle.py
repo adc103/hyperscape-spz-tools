@@ -65,7 +65,8 @@ def capture_pose_cameras(path):
     valid = np.isfinite(matrices).all(axis=(1, 2)) & np.isfinite(intrinsics).all(axis=1)
     valid &= (intrinsics[:, 0] > 0) & (intrinsics[:, 2] > 0)
     matrices, intrinsics = matrices[valid], intrinsics[valid]
-    forward = matrices[:, :3, 2]
+    # The capture cameras are y-up and look along -Z (OpenGL/OpenXR convention).
+    forward = -matrices[:, :3, 2]
     horizontal = np.hypot(forward[:, 0], forward[:, 1])
     yaw = np.arctan2(forward[:, 1], forward[:, 0])
     pitch = np.arctan2(forward[:, 2], horizontal)

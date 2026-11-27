@@ -7,13 +7,17 @@ import numpy as np
 
 
 class ViewCache:
-    byte_limit = 256 * 1024**2
+    # Cache up to half the free space (at least 256 MB, at most 16 GB).
+    byte_limit = None
 
     def __init__(self, directory, prepare):
         self.directory = Path(directory)
         self.prepare = prepare
         self.bytes_written = 0
         self.paths = {}
+        if self.byte_limit is None:
+            free = shutil.disk_usage(self.directory).free
+            self.byte_limit = int(min(16 * 1024**3, max(256 * 1024**2, free // 2)))
 
     def store(self, index, view):
         # Reserve a conservative allowance for the ZIP and array headers.
