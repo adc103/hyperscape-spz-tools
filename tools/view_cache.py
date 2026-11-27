@@ -1,8 +1,9 @@
 """Temporary storage for prepared views and native reference renders.
 
 Native references depend only on the scan, camera and size, so each one is rendered
-once and shared by every stage. They are kept as half-precision RGBA, which is far
-below the fitting error, and every caller gets its own float32 copy.
+once and shared by every stage. They are kept as half-precision RGB, which is far
+below the fitting error, and every caller gets its own float32 RGBA copy. The fitting
+passes only read RGB, so the alpha channel comes back as zero.
 """
 import atexit
 import errno
@@ -70,21 +71,25 @@ class ReferenceStore:
 
     def load(self, key):
         with np.load(self.paths[key]) as stored:
-            return self._issue(stored["rgba"].astype("f4"), key)
+            rgb = stored["rgb"]
+        target = np.zeros((*rgb.shape[:2], 4), dtype="f4")
+        target[:, :, :3] = rgb
+        return self._issue(target, key)
 
     def get(self, lib, model, camera, size, render):
         key = self.key(model, camera, size)
         if key in self.paths:
             return self.load(key)
         target = render(lib, model, camera, size)
-        half = target.astype("f2")
-        target[...] = half
+        half = target[:, :, :3].astype("f2")
+        target[:, :, :3] = half
+        target[:, :, 3] = 0
         if self.directory is None:
             self.directory = Path(tempfile.mkdtemp(prefix="hyperscape-references-"))
             atexit.register(shutil.rmtree, self.directory, True)
         if half.nbytes + RESERVE < shutil.disk_usage(self.directory).free:
             path = self.directory / f"reference-{len(self.paths)}.npz"
-            if _save(path, rgba=half):
+            if _save(path, rgb=half):
                 self.paths[key] = path
         return self._issue(target, key) if key in self.paths else target
 
