@@ -23,7 +23,7 @@ def compile_raster(directory):
     source = Path(__file__).with_name("splat_fit.cpp")
     binary = Path(directory) / "splat_fit.so"
     compiler = shlex.split(os.environ.get("CXX", "c++"))
-    subprocess.run([*compiler, "-std=c++17", "-O3", "-shared", "-fPIC", str(source), "-o", str(binary)], check=True)
+    subprocess.run([*compiler, "-std=c++17", "-O3", "-shared", "-fPIC", "-pthread", str(source), "-o", str(binary)], check=True)
     lib = ct.CDLL(str(binary))
     lib.draw_native_quad.argtypes = [ct.c_int, FLOAT, ct.c_int, ct.c_int, ct.c_float, FLOAT]
     lib.draw_native_quad.restype = None
@@ -238,6 +238,11 @@ def render_reference(lib, model, cam, size):
     return image
 
 
+def cached_reference(lib, model, cam, size):
+    """Native reference render, made once per camera and size and shared by all stages."""
+    from view_cache import REFERENCES
+    return REFERENCES.get(lib, model, cam, size, render_reference)
+
 def prepare_projection(model, cam, w, h):
     positions, scales, rotations, _, dc, sh = model
     yaw,pitch,roll=np.deg2rad(cam[[3,4,6]])
@@ -286,7 +291,7 @@ def fit(model, cameras, steps, width):
         def prepare_view(index):
             camera = cameras[index]
             data, ids = prepare(model, camera, width, height)
-            target = render_reference(lib, model, camera, (width, height))
+            target = cached_reference(lib, model, camera, (width, height))
             return dict(data=data, ids=ids, target=target)
 
         cache = ViewCache(scratch, prepare_view)

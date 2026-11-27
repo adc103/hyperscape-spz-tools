@@ -7,7 +7,7 @@ from view_cache import ViewCache
 
 from convert_spz import C0, basis
 from finish_footprints import camera_model
-from fit_splats import compile_raster, render_reference
+from fit_splats import cached_reference, compile_raster
 from refine_splats import refine_projection, render_refined, wide_cameras
 
 
@@ -34,7 +34,7 @@ def measure_sort_effect(lib, teacher, student, cameras, width):
         params = np.zeros((len(ids), 10), dtype="f4")
         params[:, 3] = student[3][ids]
         depth, radial = render_orders(lib, data, params, order, width, height)
-        target = render_reference(lib, teacher, camera, (width, height))
+        target = cached_reference(lib, teacher, camera, (width, height))
         reference = target[:, :, :3]
         advantage = np.sum((depth-reference)**2-(radial-reference)**2, axis=2)
         weight = np.clip(advantage/.012, 0, 1)[:, :, None]
@@ -135,7 +135,7 @@ def fit_sort_order(source, fitted, log_size, opacity, cameras, width):
             size = frame_width, round(frame_width*9/16)
             data, ids, _ = refine_projection(student, camera, *size)
             order = distance_order(points, ids, camera)
-            target = render_reference(lib, teacher, camera, size)
+            target = cached_reference(lib, teacher, camera, size)
             return dict(data=data, ids=ids, order=order, target=target, eye=camera[:3])
 
         cache = ViewCache(scratch, prepare_view)

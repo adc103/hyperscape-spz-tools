@@ -6,7 +6,7 @@ import numpy as np
 from view_cache import ViewCache
 from scipy.spatial.transform import Rotation
 
-from fit_splats import compile_raster, render_reference
+from fit_splats import cached_reference, compile_raster
 from refine_splats import refine_projection, render_refined, wide_cameras
 
 
@@ -40,7 +40,7 @@ def finish_footprints(source, fitted, log_size, opacity, cameras, width):
             frame_width = max(128, round(width*13/16)) if index % 2 else width
             frame_height = round(frame_width*9/16)
             data, ids, _ = refine_projection(student, camera, frame_width, frame_height)
-            target = render_reference(lib, teacher, camera, (frame_width, frame_height)) if len(ids) else None
+            target = cached_reference(lib, teacher, camera, (frame_width, frame_height)) if len(ids) else None
             radial = np.argsort(np.sum((student[0][ids]-camera[:3])**2, axis=1), kind="stable")
             return dict(data=data, ids=ids, target=target, radial=radial)
 

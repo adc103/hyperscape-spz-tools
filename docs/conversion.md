@@ -11,7 +11,7 @@ python -m pip install numpy scipy
 python tools/convert_spz.py capture.zip
 ```
 
-The capture ZIP uses its centroids for fitting and writes the PLY next to the ZIP. When present, recorded poses and visibility masks help validate the fit. Validation checks both full frames and the worst image patches. The footprint refinement also checks both depth and distance draw order. The temporary view cache is limited to 256 MiB per pass. The converter re-renders views beyond that limit.
+The capture ZIP uses its centroids for fitting and writes the PLY next to the ZIP. When present, recorded poses and visibility masks help validate the fit. Validation checks both full frames and the worst image patches. It runs the first fit, the refinement, the wide fit, and the final footprint fit. Each native reference is rendered once and shared by every pass, the temporary cache uses up to half the free disk while keeping 1 GB free, and the fitting kernels use every CPU core. Set `HYPERSCAPE_THREADS` to limit the core count.
 
 ## Fit from the app's viewpoints
 
@@ -74,7 +74,7 @@ python tools/convert_spz.py scan.spz decoded.ply --attributes-only
 python tools/convert_spz.py scan.spz finished.ply --finish-footprints
 ```
 
-This runs the split-footprint workflow, then fits scale and opacity with the new splat groups in place. The extra 320 updates leave positions, rotations, colors, and splat count as they were after splitting. It takes longer and individual views can still favor the original split fit.
+This runs the wide fit, then fits scale and opacity once more. The extra 320 updates leave positions, rotations, colors, and splat count as they were. Add `--split-footprints` to replace large, flat splats with compact groups first. Capture ZIPs run this pass by default.
 
 ## Fit for both draw orders
 
@@ -82,7 +82,7 @@ This runs the split-footprint workflow, then fits scale and opacity with the new
 python tools/convert_spz.py scan.spz fitted.ply --fit-sort-order
 ```
 
-This adds a pass after `--finish-footprints` that fits scale, opacity, and color on the splats most affected by draw order. It compares depth and distance sorting and leaves splat positions and count intact. Use either export in a standard viewer. The viewer still chooses the draw order.
+This adds a pass after `--finish-footprints` that fits scale, opacity, and color on the splats most affected by draw order. On capture fits it changes the result very little and adds noticeable time, so captures skip it unless you ask for it. It compares depth and distance sorting and leaves splat positions and count intact. Use either export in a standard viewer. The viewer still chooses the draw order.
 
 ## Set custom camera views
 

@@ -1,6 +1,32 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <thread>
 #include <vector>
+
+// Split the image into horizontal bands and spread them over threads. A pixel is
+// only touched by its own band, so blending needs no locks. Each thread handles
+// bands t, t+T, t+2T, ... and keeps its own gradient sums, so results are
+// deterministic for a given thread count.
+static int thread_count(int h) {
+    const char* env = std::getenv("HYPERSCAPE_THREADS");
+    int threads = env ? std::atoi(env) : int(std::thread::hardware_concurrency());
+    return std::max(1, std::min({threads, 64, std::max(1, h/16)}));
+}
+
+template <class Work>
+static void run_bands(int h, int threads, Work work) {
+    const int bands = threads*4;
+    auto run = [&](int t) {
+        for (int band = t; band < bands; band += threads)
+            work(t, h*band/bands, h*(band+1)/bands);
+    };
+    if (threads == 1) { run(0); return; }
+    std::vector<std::thread> pool;
+    for (int t = 1; t < threads; ++t) pool.emplace_back(run, t);
+    run(0);
+    for (auto& thread : pool) thread.join();
+}
 struct ViewSplat {
     float x,y,xx,xy,yy,r,g,b;
 };
@@ -20,58 +46,75 @@ extern "C" void raster_fit(int count,const ViewSplat* data,const int* ids,
     }
     // Render front to back. Replay the same blend in the backward pass so we
     // can recover the contribution of later splats without storing pixel lists.
-    for(int pass=0;pass<(target?2:1);pass++) {
-        std::vector<float> prefix;
-        if(pass) {
-            prefix.resize(w*h*4);
-            for(int i=0;i<w*h;i++)prefix[i*4+3]=1;
-        }
-        for(int i=0;i<count;i++) {
-            const auto& f=footprints[i];const auto& s=data[i];const int id=ids[i];
-            float ga=0,gs=0;
-            const int x0=std::max(0,int(std::ceil(s.x-f.ex))), x1=std::min(w-1,int(std::floor(s.x+f.ex)));
-            const int y0=std::max(0,int(std::ceil(s.y-f.ey))), y1=std::min(h-1,int(std::floor(s.y+f.ey)));
-            for(int y=y0;y<=y1;y++)for(int x=x0;x<=x1;x++) {
-                const int k=(y*w+x)*4;
-                float* p=(pass?prefix.data():out)+k;
-                const float trans=p[3];
-                if(trans<.001f)continue;
-                const float dx=x-s.x,dy=y-s.y;
-                const float u=f.inv00*dx+f.inv01*dy,v=f.inv01*dx+f.inv11*dy;
-                const float d=u*dx+v*dy;
-                if(d>9)continue;
-                const float kernel=std::exp(-.5f*d),a=std::min(.999f,f.opacity*kernel);
-                const float color[]={s.r,s.g,s.b};
-                if(a<1.f/255)continue;
-                float weight=0;
-                for(int channel=0;channel<3;channel++) {
-                    p[channel]+=trans*a*color[channel];
+    const int threads = thread_count(h);
+    std::vector<float> prefix;
+    if (target) {
+        prefix.resize(size_t(w)*h*4);
+        for (int i=0;i<w*h;i++) prefix[i*4+3]=1;
+    }
+    std::vector<float> sums(target ? size_t(threads)*count*2 : 0);
+    run_bands(h, threads, [&](int t, int band0, int band1) {
+        float* thread_sums = target ? sums.data()+size_t(t)*count*2 : nullptr;
+        for(int pass=0;pass<(target?2:1);pass++) {
+            for(int i=0;i<count;i++) {
+                const auto& f=footprints[i];const auto& s=data[i];
+                const int y0=std::max(band0,int(std::ceil(s.y-f.ey))), y1=std::min(band1-1,int(std::floor(s.y+f.ey)));
+                if(y0>y1)continue;
+                const int x0=std::max(0,int(std::ceil(s.x-f.ex))), x1=std::min(w-1,int(std::floor(s.x+f.ex)));
+                float ga=0,gs=0;
+                for(int y=y0;y<=y1;y++)for(int x=x0;x<=x1;x++) {
+                    const int k=(y*w+x)*4;
+                    float* p=(pass?prefix.data():out)+k;
+                    const float trans=p[3];
+                    if(trans<.001f)continue;
+                    const float dx=x-s.x,dy=y-s.y;
+                    const float u=f.inv00*dx+f.inv01*dy,v=f.inv01*dx+f.inv11*dy;
+                    const float d=u*dx+v*dy;
+                    if(d>9)continue;
+                    const float kernel=std::exp(-.5f*d),a=std::min(.999f,f.opacity*kernel);
+                    const float color[]={s.r,s.g,s.b};
+                    if(a<1.f/255)continue;
+                    float weight=0;
+                    for(int channel=0;channel<3;channel++) {
+                        p[channel]+=trans*a*color[channel];
+                        if(pass) {
+                            const float residual=out[k+channel]-target[k+channel];
+                            const float image_grad=std::clamp(residual,-.08f,.08f);
+                            // The part after this splat is attenuated by (1-a).
+                            weight+=image_grad*(trans*color[channel]-(out[k+channel]-p[channel])/(1-a));
+                        }
+                    }
+                    p[3]*=1-a;
                     if(pass) {
-                        const float residual=out[k+channel]-target[k+channel];
-                        const float image_grad=std::clamp(residual,-.08f,.08f);
-                        // The part after this splat is attenuated by (1-a).
-                        weight+=image_grad*(trans*color[channel]-(out[k+channel]-p[channel])/(1-a));
+                        ga+=weight*kernel;
+                        gs+=weight*a*(d-.3f*(u*u+v*v));
                     }
                 }
-                p[3]*=1-a;
-                if(pass) {
-                    ga+=weight*kernel;
-                    gs+=weight*a*(d-.3f*(u*u+v*v));
-                }
+                if(pass) {thread_sums[2*i]+=ga;thread_sums[2*i+1]+=gs;}
             }
-            if(pass) {grad_alpha[id]+=ga;grad_scale[id]+=gs;}
+        }
+    });
+    if (target) {
+        for (int t=0;t<threads;t++) {
+            const float* thread_sums=sums.data()+size_t(t)*count*2;
+            for (int i=0;i<count;i++) {
+                grad_alpha[ids[i]]+=thread_sums[2*i];
+                grad_scale[ids[i]]+=thread_sums[2*i+1];
+            }
         }
     }
 }
 
 // RayQuadratic reference rasterization, using precomputed view-space support.
 extern "C" void draw_native_quad(int count, const float* splats, int w, int h, float focal, float* output) {
+    run_bands(h, thread_count(h), [&](int, int band0, int band1) {
     for (int i=0; i<count; ++i) {
         const float* s=splats+i*19;
+        const int top=std::max(band0,(int)std::ceil(s[2]));
+        const int bottom=std::min(band1-1,(int)std::floor(s[3]));
+        if (top>bottom) continue;
         const int left=std::max(0,(int)std::ceil(s[0]));
         const int right=std::min(w-1,(int)std::floor(s[1]));
-        const int top=std::max(0,(int)std::ceil(s[2]));
-        const int bottom=std::min(h-1,(int)std::floor(s[3]));
         for (int y=top; y<=bottom; ++y) {
             const float py=(y+.5f-h*.5f)/focal;
             for (int x=left; x<=right; ++x) {
@@ -90,6 +133,7 @@ extern "C" void draw_native_quad(int count, const float* splats, int w, int h, f
             }
         }
     }
+    });
 }
 struct RefineSplat {
     float x, y, jx[3], jy[3], r, g, b;
@@ -148,19 +192,24 @@ extern "C" void raster_refine(int count, const RefineSplat* data, int w, int h,
     // differentiation. Only two framebuffer-sized buffers are needed.
     std::vector<float> prefix;
     if (target) {
-        prefix.resize(w*h*4);
+        prefix.resize(size_t(w)*h*4);
         for (int i = 0; i < w*h; ++i) prefix[i*4+3] = 1;
     }
+    const int threads = thread_count(h);
+    std::vector<float> sums(target ? size_t(threads)*count*10 : 0);
+    run_bands(h, threads, [&](int t, int band0, int band1) {
+    float* thread_sums = target ? sums.data()+size_t(t)*count*10 : nullptr;
     for (int pass = 0; pass < (target ? 2 : 1); ++pass) {
         for (int i = 0; i < count; ++i) {
             const auto& f = footprints[i];
+            const int y0 = std::max(band0,int(std::ceil(f.y-f.ey)));
+            const int y1 = std::min(band1-1,int(std::floor(f.y+f.ey)));
+            if (y0 > y1) continue;
             const auto& splat = data[i];
             const float* p = params+10*i;
             float g[10] = {};
             const int x0 = std::max(0,int(std::ceil(f.x-f.ex)));
             const int x1 = std::min(w-1,int(std::floor(f.x+f.ex)));
-            const int y0 = std::max(0,int(std::ceil(f.y-f.ey)));
-            const int y1 = std::min(h-1,int(std::floor(f.y+f.ey)));
             for (int y = y0; y <= y1; ++y) {
                 for (int x = x0; x <= x1; ++x) {
                     const int k = (y*w+x)*4;
@@ -200,7 +249,15 @@ extern "C" void raster_refine(int count, const RefineSplat* data, int w, int h,
                     }
                 }
             }
-            if (pass) std::copy(g,g+10,gradient+10*i);
+            if (pass) for (int j = 0; j < 10; ++j) thread_sums[10*i+j] += g[j];
+        }
+    }
+    });
+    if (target) {
+        std::fill(gradient, gradient+size_t(count)*10, 0.f);
+        for (int t = 0; t < threads; ++t) {
+            const float* thread_sums = sums.data()+size_t(t)*count*10;
+            for (size_t j = 0; j < size_t(count)*10; ++j) gradient[j] += thread_sums[j];
         }
     }
 }
