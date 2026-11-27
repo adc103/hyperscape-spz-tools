@@ -92,6 +92,25 @@ By default the converter samples camera positions on the inferred floor and rend
 
 The automatic fit defaults to `--width 448 --steps 512`. With `--clusters` the defaults are `--width 1280 --steps 512`.
 
+## Check a PLY for regressions
+
+Compare two converter exports from the same capture.
+
+```sh
+python tools/compare_ply.py capture.zip previous.ply candidate.ply
+```
+
+The tool renders recorded and nearby views at 448, 960, and 1280 pixels.
+It checks whole frames and the worst image patches in both draw orders,
+with and without visibility masks when available. The report identifies
+the view, order, and reference for the largest increase in error at each
+resolution. The command exits with status 1 if a comparison exceeds the
+error tolerance, or 2 if it cannot complete the check.
+
+Use `--cameras cameras.json` to check specific views or to use a standalone
+SPZ. Use `--widths` to choose render widths. The PLY inputs must use the
+converter’s binary float32 Gaussian layout and orientation.
+
 ## Compare draw orders in the browser
 
 Open the [PLY viewer](https://adc103.github.io/hyperscape-spz-tools/viewer/ply.html) on desktop and load a converted PLY. Use **Draw order** to switch between distance and depth at the same camera pose. Distance is the default. The viewer opens the file locally.
