@@ -24,7 +24,8 @@ class ViewCache:
         size = sum(array.nbytes + 1024 for array in view.values())
         if size > self.byte_limit - self.bytes_written:
             return
-        if size + 16 * 1024**2 > shutil.disk_usage(self.directory).free:
+        # Keep at least 1 GB free for the output and other programs.
+        if size + 1024**3 > shutil.disk_usage(self.directory).free:
             return
         path = self.directory / f"view-{index}.npz"
         try:

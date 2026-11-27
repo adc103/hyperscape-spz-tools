@@ -46,11 +46,13 @@ def validate_cameras(cameras):
     return values
 
 
-def cluster_cameras(path, splat_count, headings=4):
-    """Build fitting views from the app's visibility cluster centroids.
+def cluster_cameras(path, splat_count, headings=4, target_views=512, jitter=.3, pitch=(-30, 12)):
+    """Build fitting views around the app's visibility cluster centroids.
 
     The app writes one centroid per visibility cluster at standing eye height. Each one
-    becomes `headings` evenly spaced views with a slight downward pitch.
+    gets `headings` evenly spaced views. The views are repeated until there are about
+    `target_views`, and each copy moves the eye up to `jitter` meters and varies the
+    pitch, so the fit holds up wherever the viewer stands and looks.
     """
     data = json.loads(Path(path).read_text())
     if not isinstance(data, dict) or data.get("splat_count") != splat_count:
@@ -64,7 +66,17 @@ def cluster_cameras(path, splat_count, headings=4):
     cameras[..., 3] = (offset[:, None]+np.arange(headings)*360/headings) % 360
     cameras[..., 4] = -5
     cameras[..., 5] = 88
-    return cameras.reshape(-1, 7)
+    cameras = cameras.reshape(-1, 7)
+    copies = max(1, round(target_views/len(cameras)))
+    if not jitter:
+        return cameras
+    rng = np.random.default_rng(11)
+    cameras = np.repeat(cameras, copies, axis=0)
+    cameras[:, :2] += rng.uniform(-jitter, jitter, (len(cameras), 2))
+    cameras[:, 2] += rng.uniform(-jitter/3, jitter/3, len(cameras))
+    cameras[:, 3] = (cameras[:, 3]+rng.uniform(-45/copies, 45/copies, len(cameras))) % 360
+    cameras[:, 4] = rng.uniform(*pitch, len(cameras))
+    return cameras
 
 
 def auto_cameras(model):

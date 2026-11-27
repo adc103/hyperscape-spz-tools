@@ -10,6 +10,10 @@ from convert_spz import C0
 from fit_splats import compile_raster, depth_fade, mip_filter, prepare_projection, render_reference
 
 
+# Pull toward the starting fit. Larger values generalize to unseen views more cautiously.
+REGULARIZATION = 1.0
+
+
 def refine_projection(model, camera, width, height):
     screen, jx, jy, color, ids, harmonics = prepare_projection(model, camera, width, height)
     packed = np.ascontiguousarray(np.column_stack((screen, jx, jy, color)), dtype="f4")
@@ -77,8 +81,8 @@ def refine(model, cameras, log_size, opacity, steps, width, wide=False):
     first_moment, second_moment = np.zeros_like(params), np.zeros_like(params)
     color_first, color_second = np.zeros_like(color), np.zeros_like(color)
     observations = np.zeros(len(alpha), dtype="i4")
-    regularization = np.array([.003]*3 + [.002] + [.018]*3, dtype="f4")
-    color_regularization = np.array([.018, .038, .038, .038])[:terms]
+    regularization = REGULARIZATION*np.array([.003]*3 + [.002] + [.018]*3, dtype="f4")
+    color_regularization = REGULARIZATION*np.array([.018, .038, .038, .038])[:terms]
     lower = [-1.25]*3 + [0] + [-.55]*3
     upper = [.85]*3 + [1] + [.55]*3
 
