@@ -6,8 +6,10 @@ below the fitting error, and every caller gets its own float32 RGBA copy. The fi
 passes only read RGB, so the alpha channel comes back as zero.
 """
 import atexit
+from concurrent.futures import ProcessPoolExecutor
 import errno
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -27,6 +29,28 @@ def _save(path, **arrays):
         Path(path).unlink(missing_ok=True)
         return False
     return True
+
+
+_worker = {}
+
+
+def _start_worker(model, directory):
+    """Worker setup for parallel reference renders: one kernel thread per process."""
+    os.environ["HYPERSCAPE_THREADS"] = "1"
+    from fit_splats import compile_raster
+    scratch = Path(tempfile.mkdtemp(prefix="worker-", dir=directory))
+    _worker.update(model=model, directory=Path(directory), lib=compile_raster(scratch))
+
+
+def _render_job(job):
+    name, camera, size = job
+    from fit_splats import render_reference
+    target = render_reference(_worker["lib"], _worker["model"], camera, size)
+    half = target[:, :, :3].astype("f2")
+    path = _worker["directory"]/name
+    if half.nbytes + RESERVE < shutil.disk_usage(path.parent).free and _save(path, rgb=half):
+        return str(path)
+    return None
 
 
 class ReferenceStore:
@@ -76,6 +100,36 @@ class ReferenceStore:
         target[:, :, :3] = rgb
         return self._issue(target, key)
 
+    def _directory(self):
+        if self.directory is None:
+            self.directory = Path(tempfile.mkdtemp(prefix="hyperscape-references-"))
+            atexit.register(shutil.rmtree, self.directory, True)
+        return self.directory
+
+    def prefetch(self, model, views):
+        """Render missing references for (camera, size) pairs in worker processes.
+
+        Each reference is independent, so this spreads the Python setup and the
+        native rasterization over every core. Later get() calls find them stored.
+        """
+        workers = int(os.environ.get("HYPERSCAPE_WORKERS", 0)) or os.cpu_count() or 1
+        jobs, keys = [], set()
+        for camera, size in views:
+            key = self.key(model, camera, size)
+            if key not in self.paths and key not in keys:
+                keys.add(key)
+                jobs.append((key, camera, size))
+        workers = min(workers, len(jobs)//2)
+        if workers < 2:
+            return
+        directory = self._directory()
+        batch = len(self.paths)
+        names = [(f"reference-{batch}-{i}.npz", camera, size) for i, (_, camera, size) in enumerate(jobs)]
+        with ProcessPoolExecutor(workers, initializer=_start_worker, initargs=(model, str(directory))) as pool:
+            for (key, _, _), path in zip(jobs, pool.map(_render_job, names, chunksize=4)):
+                if path:
+                    self.paths[key] = Path(path)
+
     def get(self, lib, model, camera, size, render):
         key = self.key(model, camera, size)
         if key in self.paths:
@@ -84,10 +138,7 @@ class ReferenceStore:
         half = target[:, :, :3].astype("f2")
         target[:, :, :3] = half
         target[:, :, 3] = 0
-        if self.directory is None:
-            self.directory = Path(tempfile.mkdtemp(prefix="hyperscape-references-"))
-            atexit.register(shutil.rmtree, self.directory, True)
-        if half.nbytes + RESERVE < shutil.disk_usage(self.directory).free:
+        if half.nbytes + RESERVE < shutil.disk_usage(self._directory()).free:
             path = self.directory / f"reference-{len(self.paths)}.npz"
             if _save(path, rgb=half):
                 self.paths[key] = path

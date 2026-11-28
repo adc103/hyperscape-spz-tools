@@ -243,6 +243,12 @@ def cached_reference(lib, model, cam, size):
     from view_cache import REFERENCES
     return REFERENCES.get(lib, model, cam, size, render_reference)
 
+
+def prefetch_references(model, views):
+    """Render the references a pass will need, in parallel, before it starts."""
+    from view_cache import REFERENCES
+    REFERENCES.prefetch(model, views)
+
 def prepare_projection(model, cam, w, h):
     positions, scales, rotations, _, dc, sh = model
     yaw,pitch,roll=np.deg2rad(cam[[3,4,6]])
@@ -288,6 +294,7 @@ def fit(model, cameras, steps, width):
     height = round(width*9/16)
     with tempfile.TemporaryDirectory(prefix="hyperscape-fit-") as scratch:
         lib = compile_raster(scratch)
+        prefetch_references(model, [(camera, (width, height)) for camera in cameras])
         def prepare_view(index):
             camera = cameras[index]
             data, ids = prepare(model, camera, width, height)

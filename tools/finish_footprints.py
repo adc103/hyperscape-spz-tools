@@ -6,7 +6,7 @@ import numpy as np
 from view_cache import ViewCache
 from scipy.spatial.transform import Rotation
 
-from fit_splats import cached_reference, compile_raster
+from fit_splats import cached_reference, compile_raster, prefetch_references
 from refine_splats import refine_projection, render_refined, wide_cameras
 
 
@@ -35,6 +35,8 @@ def finish_footprints(source, fitted, log_size, opacity, cameras, width):
 
     with tempfile.TemporaryDirectory(prefix="hyperscape-finish-") as scratch:
         lib = compile_raster(scratch)
+        sizes = [max(128, round(width*13/16)) if i % 2 else width for i in range(len(cameras))]
+        prefetch_references(teacher, [(camera, (w, round(w*9/16))) for camera, w in zip(cameras, sizes)])
         def prepare_view(index):
             camera = cameras[index]
             frame_width = max(128, round(width*13/16)) if index % 2 else width

@@ -7,7 +7,7 @@ from view_cache import ViewCache
 from scipy.spatial.transform import Rotation
 
 from convert_spz import C0
-from fit_splats import cached_reference, compile_raster, depth_fade, mip_filter, prepare_projection
+from fit_splats import cached_reference, compile_raster, depth_fade, mip_filter, prefetch_references, prepare_projection
 
 
 # Pull toward the starting fit. Larger values generalize to unseen views more cautiously.
@@ -88,6 +88,8 @@ def refine(model, cameras, log_size, opacity, steps, width, wide=False):
 
     with tempfile.TemporaryDirectory(prefix="hyperscape-refine-") as scratch:
         lib = compile_raster(scratch)
+        sizes = [max(128, round(width*5/8)) if wide and i % 2 else width for i in range(len(cameras))]
+        prefetch_references(reference, [(camera, (w, round(w*9/16))) for camera, w in zip(cameras, sizes)])
         def prepare_view(index):
             camera = cameras[index]
             frame_width = max(128, round(width*5/8)) if wide and index % 2 else width
