@@ -23,7 +23,7 @@ def compile_raster(directory):
     source = Path(__file__).with_name("splat_fit.cpp")
     binary = Path(directory) / "splat_fit.so"
     compiler = shlex.split(os.environ.get("CXX", "c++"))
-    subprocess.run([*compiler, "-std=c++17", "-O3", "-shared", "-fPIC", str(source), "-o", str(binary)], check=True)
+    subprocess.run([*compiler, "-std=c++17", "-O3", "-shared", "-fPIC", "-pthread", str(source), "-o", str(binary)], check=True)
     lib = ct.CDLL(str(binary))
     lib.draw_native_quad.argtypes = [ct.c_int, FLOAT, ct.c_int, ct.c_int, ct.c_float, FLOAT]
     lib.draw_native_quad.restype = None
@@ -46,11 +46,13 @@ def validate_cameras(cameras):
     return values
 
 
-def cluster_cameras(path, splat_count, headings=4):
-    """Build fitting views from the app's visibility cluster centroids.
+def cluster_cameras(path, splat_count, headings=4, target_views=512, jitter=.3, pitch=(-30, 12)):
+    """Build fitting views around the app's visibility cluster centroids.
 
     The app writes one centroid per visibility cluster at standing eye height. Each one
-    becomes `headings` evenly spaced views with a slight downward pitch.
+    gets `headings` evenly spaced views. The views are repeated until there are about
+    `target_views`, and each copy moves the eye up to `jitter` meters and varies the
+    pitch, so the fit holds up wherever the viewer stands and looks.
     """
     data = json.loads(Path(path).read_text())
     if not isinstance(data, dict) or data.get("splat_count") != splat_count:
@@ -64,7 +66,17 @@ def cluster_cameras(path, splat_count, headings=4):
     cameras[..., 3] = (offset[:, None]+np.arange(headings)*360/headings) % 360
     cameras[..., 4] = -5
     cameras[..., 5] = 88
-    return cameras.reshape(-1, 7)
+    cameras = cameras.reshape(-1, 7)
+    copies = max(1, round(target_views/len(cameras)))
+    if not jitter:
+        return cameras
+    rng = np.random.default_rng(11)
+    cameras = np.repeat(cameras, copies, axis=0)
+    cameras[:, :2] += rng.uniform(-jitter, jitter, (len(cameras), 2))
+    cameras[:, 2] += rng.uniform(-jitter/3, jitter/3, len(cameras))
+    cameras[:, 3] = (cameras[:, 3]+rng.uniform(-45/copies, 45/copies, len(cameras))) % 360
+    cameras[:, 4] = rng.uniform(*pitch, len(cameras))
+    return cameras
 
 
 def auto_cameras(model):
@@ -226,6 +238,17 @@ def render_reference(lib, model, cam, size):
     return image
 
 
+def cached_reference(lib, model, cam, size):
+    """Native reference render, made once per camera and size and shared by all stages."""
+    from view_cache import REFERENCES
+    return REFERENCES.get(lib, model, cam, size, render_reference)
+
+
+def prefetch_references(model, views):
+    """Render the references a pass will need, in parallel, before it starts."""
+    from view_cache import REFERENCES
+    REFERENCES.prefetch(model, views)
+
 def prepare_projection(model, cam, w, h):
     positions, scales, rotations, _, dc, sh = model
     yaw,pitch,roll=np.deg2rad(cam[[3,4,6]])
@@ -271,10 +294,11 @@ def fit(model, cameras, steps, width):
     height = round(width*9/16)
     with tempfile.TemporaryDirectory(prefix="hyperscape-fit-") as scratch:
         lib = compile_raster(scratch)
+        prefetch_references(model, [(camera, (width, height)) for camera in cameras])
         def prepare_view(index):
             camera = cameras[index]
             data, ids = prepare(model, camera, width, height)
-            target = render_reference(lib, model, camera, (width, height))
+            target = cached_reference(lib, model, camera, (width, height))
             return dict(data=data, ids=ids, target=target)
 
         cache = ViewCache(scratch, prepare_view)

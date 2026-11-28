@@ -109,7 +109,7 @@ def main():
     parser.add_argument("--split-footprints", action="store_true",
                         help="Reduce spill at edges by replacing selected large, flat splats")
     parser.add_argument("--finish-footprints", action="store_true",
-                        help="Split wide footprints, then refit their scale and opacity against rendered views")
+                        help="Run the wide fit, then refit scale and opacity against rendered views")
     parser.add_argument("--fit-sort-order", action="store_true",
                         help="Refit order-sensitive coverage and color for depth and distance sorting")
     parser.add_argument("--force", action="store_true", help="Replace an existing output")
@@ -137,15 +137,16 @@ def convert(args, scan, folder):
     steps = args.steps if args.steps is not None else (320 if args.cameras else 512)
     width = args.width if args.width is not None else (1280 if args.clusters else 480 if args.cameras else 448)
     if folder is not None and not args.attributes_only:
-        args.fit_sort_order = True
+        # Footprint splitting and sort-order fitting barely change capture fits, so
+        # captures stop after the final footprint fit unless those are asked for.
+        args.finish_footprints = True
     if args.fit_sort_order:
         args.finish_footprints = True
-    if args.finish_footprints:
-        args.split_footprints = True
-    if args.split_footprints:
+    if args.finish_footprints or args.split_footprints:
         args.refine_wide = True
     if args.refine_wide and args.refine is None:
-        args.refine = 768
+        # Cluster views are varied, so each one needs more updates to converge.
+        args.refine = 1536 if args.clusters else 768
     if args.refine is not None and (args.attributes_only or args.refine < 1):
         raise ValueError("--refine needs positive steps and a fitted export")
     if steps < 1 or not 128 <= width <= 1920:
@@ -183,7 +184,11 @@ def convert(args, scan, folder):
             log_size *= .8
             opacity = model[3] + .8*(opacity-model[3])
         if args.refine is not None:
+            import refine_splats
             from refine_splats import blend_refinements, refine
+            if args.clusters:
+                # Varied cluster views generalize well, so let the refinement move further.
+                refine_splats.REGULARIZATION = .3
             refined = refine(model, cameras, log_size, opacity, args.refine, width)
             if args.refine_wide:
                 wide_width = min(1920, round(width*8/7))

@@ -7,7 +7,11 @@ from view_cache import ViewCache
 from scipy.spatial.transform import Rotation
 
 from convert_spz import C0
-from fit_splats import compile_raster, depth_fade, mip_filter, prepare_projection, render_reference
+from fit_splats import cached_reference, compile_raster, depth_fade, mip_filter, prefetch_references, prepare_projection
+
+
+# Pull toward the starting fit. Larger values generalize to unseen views more cautiously.
+REGULARIZATION = 1.0
 
 
 def refine_projection(model, camera, width, height):
@@ -77,19 +81,21 @@ def refine(model, cameras, log_size, opacity, steps, width, wide=False):
     first_moment, second_moment = np.zeros_like(params), np.zeros_like(params)
     color_first, color_second = np.zeros_like(color), np.zeros_like(color)
     observations = np.zeros(len(alpha), dtype="i4")
-    regularization = np.array([.003]*3 + [.002] + [.018]*3, dtype="f4")
-    color_regularization = np.array([.018, .038, .038, .038])[:terms]
+    regularization = REGULARIZATION*np.array([.003]*3 + [.002] + [.018]*3, dtype="f4")
+    color_regularization = REGULARIZATION*np.array([.018, .038, .038, .038])[:terms]
     lower = [-1.25]*3 + [0] + [-.55]*3
     upper = [.85]*3 + [1] + [.55]*3
 
     with tempfile.TemporaryDirectory(prefix="hyperscape-refine-") as scratch:
         lib = compile_raster(scratch)
+        sizes = [max(128, round(width*5/8)) if wide and i % 2 else width for i in range(len(cameras))]
+        prefetch_references(reference, [(camera, (w, round(w*9/16))) for camera, w in zip(cameras, sizes)])
         def prepare_view(index):
             camera = cameras[index]
             frame_width = max(128, round(width*5/8)) if wide and index % 2 else width
             frame_height = round(frame_width*9/16)
             data, ids, harmonics = refine_projection(reference, camera, frame_width, frame_height)
-            target = render_reference(lib, reference, camera, (frame_width, frame_height)) if len(ids) else None
+            target = cached_reference(lib, reference, camera, (frame_width, frame_height)) if len(ids) else None
             return dict(data=data, ids=ids, harmonics=harmonics, target=target)
 
         cache = ViewCache(scratch, prepare_view)
